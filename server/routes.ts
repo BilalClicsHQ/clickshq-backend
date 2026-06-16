@@ -208,7 +208,7 @@ async function registerAllRoutes(app: Express): Promise<void> {
       session: true
     }),
     (req, res) => {
-      const base = process.env.APP_URL || 'http://localhost:5000';
+      const base = process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:5173';
       const user = req.user as any;
       if (user && !user.hasCompletedOnboarding) {
         return res.redirect(`${base}/onboarding`);
@@ -228,7 +228,7 @@ async function registerAllRoutes(app: Express): Promise<void> {
       session: true
     }),
     (req, res) => {
-      const base = process.env.APP_URL || 'http://localhost:5000';
+      const base = process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:5173';
       const user = req.user as any;
       if (user && !user.hasCompletedOnboarding) {
         return res.redirect(`${base}/onboarding`);
@@ -280,6 +280,7 @@ async function registerAllRoutes(app: Express): Promise<void> {
             displayName: user.displayName,
             role: user.role,
             profilePicture: user.profilePicture,
+            hasCompletedOnboarding: user.hasCompletedOnboarding,
           },
           redirect: "/",
         });
@@ -1459,7 +1460,7 @@ app.post("/api/tasks/:taskId/comments", requireAuth, async (req, res) => {
                 taskData.name,
                 spaceData?.name || 'a space',
                 content.trim(),
-                `${process.env.APP_URL || 'http://localhost:5000'}/task/${taskId}`
+                 `${process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:5173'}/task/${taskId}`
               ).catch(err => console.error(`Failed to send mention email to ${mentionedUser.email}:`, err));
             }
           }
@@ -1993,7 +1994,7 @@ app.post("/api/spaces/:spaceId/invite", requireAuth, async (req, res) => {
     });
 
     // Build accept link
-    const inviteLink = `${process.env.APP_URL || "http://localhost:5000"}/accept-invite?token=${inviteToken}`;
+    const inviteLink = `${process.env.FRONTEND_URL || process.env.APP_URL || "http://localhost:5173"}/accept-invite?token=${inviteToken}`;
 
     await sendSpaceInviteEmail({
       toEmail: normalizedEmail,
