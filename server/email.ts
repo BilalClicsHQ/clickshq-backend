@@ -106,7 +106,7 @@ export async function sendVerificationEmail(
   token: string,
   displayName: string
 ) {
-  const verificationUrl = `${process.env.APP_URL || 'http://localhost:5000'}/verify-email?token=${token}`;
+  const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${token}`;
 
   const mailOptions = {
     from: `"ClicsHQ" <${process.env.GMAIL_USER}>`,
@@ -163,7 +163,7 @@ export async function sendVerificationEmail(
 }
 
 export async function sendPasswordResetEmail(email: string, resetToken: string, displayName: string) {
-  const resetUrl = `${process.env.APP_URL || 'http://localhost:5000'}/reset-password?token=${resetToken}`;
+  const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
 
   const mailOptions = {
     from: `"${process.env.APP_NAME || 'Your App'}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
@@ -255,7 +255,7 @@ export async function sendSpaceInviteEmail(opts: SpaceInviteEmailOptions) {
     : `
       <p>You can now log in to ClicsHQ and access the space directly.</p>
       <div style="text-align:center;margin:30px 0;">
-        <a href="${process.env.APP_URL || 'http://localhost:5000'}/login" class="button" style="display:inline-block;padding:15px 30px;background:#000;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;font-size:15px;">
+        <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/login" class="button" style="display:inline-block;padding:15px 30px;background:#000;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;font-size:15px;">
           Go to ClicsHQ
         </a>
       </div>
