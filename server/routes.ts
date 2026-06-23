@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import passport from "passport";
 import { storage } from "./storage";
 import { requireAuth, hashPassword, validatePassword, validateEmail, generateVerificationToken } from "./auth";
-import { insertProjectSchema, updateProjectSchema, insertTeamMemberSchema, insertGoalSchema, updateGoalSchema, insertSprintSchema, updateSprintSchema, updateUserRoleSchema, projectStatusUpdates, projectBudgets, projectCosts, workspaceProjects, projectActivities, projectAttachments, insertProjectBudgetSchema, insertProjectCostSchema, users, projects, tasks, spaceInvitations, spaces, spaceFavourites, spaceRecentActivity, taskComments  } from "@shared/schema";
+import { insertProjectSchema, updateProjectSchema, insertTeamMemberSchema, insertGoalSchema, updateGoalSchema, insertSprintSchema, updateSprintSchema, updateUserRoleSchema, projectStatusUpdates, projectBudgets, projectCosts, workspaceProjects, projectActivities, projectAttachments, insertProjectBudgetSchema, insertProjectCostSchema, users, projects, tasks, spaceInvitations, spaces, spaceFavourites, spaceRecentActivity, taskComments, taskFileAttachments, taskActivities } from "@shared/schema";
 import { ObjectStorageService, ObjectNotFoundError } from "./objectStorage";
 import { z } from "zod";
 import { isValidContextId } from "@shared/context-helpers";
@@ -48,6 +48,13 @@ import salesforceRoutes from "./routes/salesforce.routes";
 import gmailRoutes from "./routes/gmail.routes";
 import onedriveRoutes from "./routes/onedrive.routes";
 import notificationRoutes from "./routes/notifications.routes";
+import multer from "multer";
+import { uploadFileToS3, copyS3Object, deleteS3Object } from "./services/s3Service";
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
 
 const { authenticator } = otplib;
 
@@ -65,6 +72,108 @@ async function upsertRecentActivity(db: any, userId: string, spaceId: string) {
       .where(and(eq(spaceRecentActivity.userId, userId), eq(spaceRecentActivity.spaceId, spaceId)));
   } else {
     await db.insert(spaceRecentActivity).values({ userId, spaceId, lastActivityAt: new Date() });
+  }
+}
+
+async function syncTaskAttachments(taskId: string, attachments: any[], userId: string): Promise<string[]> {
+  try {
+    const realDbAttachments = await storage.getTaskFileAttachments(taskId);
+
+    const tempTaskIds = Array.from(new Set(
+      attachments
+        .filter(att => att && typeof att.taskId === "string" && att.taskId.startsWith("temp"))
+        .map(att => att.taskId)
+    ));
+
+    const tempDbAttachments = [];
+    for (const tempId of tempTaskIds) {
+      const atts = await storage.getTaskFileAttachments(tempId);
+      tempDbAttachments.push(...atts);
+    }
+
+    const allDbAttachments = [...realDbAttachments, ...tempDbAttachments];
+
+    const incomingIds = attachments.filter(att => att && att.id).map(att => att.id);
+    const deletedAttachments = allDbAttachments.filter(dbAtt => !incomingIds.includes(dbAtt.id));
+
+    for (const del of deletedAttachments) {
+      console.log(`[Sync S3] Deleting attachment ${del.name} (${del.id})`);
+      if (del.provider === "s3" && del.externalId) {
+        await deleteS3Object(del.externalId).catch(err => {
+          console.error(`[Sync S3] Failed to delete key ${del.externalId} from S3:`, err);
+        });
+      }
+      await storage.deleteFileAttachment(del.id).catch(err => {
+        console.error(`[Sync DB] Failed to delete attachment record ${del.id}:`, err);
+      });
+    }
+
+    const savedUrls: string[] = [];
+
+    for (const incoming of attachments) {
+      if (!incoming) continue;
+      
+      const dbRecord = allDbAttachments.find(d => d.id === incoming.id);
+      if (!dbRecord) {
+        if (incoming.externalUrl) {
+          savedUrls.push(incoming.externalUrl);
+        }
+        continue;
+      }
+
+      if (dbRecord.taskId.startsWith("temp")) {
+        const oldKey = dbRecord.externalId;
+        const keyParts = oldKey.split("/");
+        const filenameWithUuid = keyParts[keyParts.length - 1];
+        const newKey = `tasks/${taskId}/${filenameWithUuid}`;
+        
+        const oldUrl = dbRecord.externalUrl || "";
+        const bucketName = process.env.AWS_S3_BUCKET || "";
+        const region = process.env.AWS_REGION || "us-east-1";
+        const newUrl = `https://${bucketName}.s3.${region}.amazonaws.com/${newKey}`;
+
+        console.log(`[Sync S3] Re-parenting S3 file: ${oldKey} -> ${newKey}`);
+        
+        try {
+          await copyS3Object(oldKey, newKey);
+          await deleteS3Object(oldKey);
+
+          await db
+            .update(taskFileAttachments)
+            .set({
+              taskId: taskId,
+              externalId: newKey,
+              externalUrl: newUrl,
+              downloadUrl: newUrl,
+              embedUrl: newUrl,
+              thumbnailUrl: dbRecord.mimeType?.startsWith("image/") ? newUrl : null,
+              metadata: {
+                ...(dbRecord.metadata as any || {}),
+                s3Key: newKey,
+              }
+            })
+            .where(eq(taskFileAttachments.id, dbRecord.id));
+          
+          savedUrls.push(newUrl);
+
+          await db
+            .update(taskActivities)
+            .set({ taskId: taskId })
+            .where(eq(taskActivities.taskId, dbRecord.taskId));
+            
+        } catch (err) {
+          console.error(`[Sync S3] Failed to move S3 object ${oldKey}:`, err);
+          savedUrls.push(oldUrl);
+        }
+      } else {
+        savedUrls.push(dbRecord.externalUrl || "");
+      }
+    }
+
+    return savedUrls;
+  } catch (error) {
+    console.error("[syncTaskAttachments Error]:", error);
+    return [];
   }
 }
 
@@ -2122,9 +2231,47 @@ app.post("/api/spaces/invite/accept", async (req, res) => {
 });
 
 
-// ── GET /api/users/:userId/known-collaborators
+  // GET /api/users — get all users for the current company
+  app.get("/api/users", requireAuth, async (req, res) => {
+    try {
+      const user = req.user as any;
+      if (!user.companyId) {
+        // Fallback: if requesting user has no companyId, return only themselves
+        const singleUser = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, user.id));
+        return res.json(singleUser);
+      }
 
-app.get("/api/users/:userId/known-collaborators", requireAuth, async (req, res) => {
+      const companyUsers = await db
+        .select()
+        .from(users)
+        .where(eq(users.companyId, user.companyId));
+
+      res.json(companyUsers);
+    } catch (error) {
+      console.error("Error fetching users:", error);
+      res.status(500).json({ message: "Failed to fetch users" });
+    }
+  });
+
+  // GET /api/users/:id — get user details by ID
+  app.get("/api/users/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await storage.getUser(req.params.id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      res.json(user);
+    } catch (error) {
+      console.error("Error fetching user details:", error);
+      res.status(500).json({ message: "Failed to fetch user details" });
+    }
+  });
+
+  // ── GET /api/users/:userId/known-collaborators
+  app.get("/api/users/:userId/known-collaborators", requireAuth, async (req, res) => {
   try {
     const requestingUser = (req.user as any)?.id;
     const { userId } = req.params;
@@ -3186,8 +3333,14 @@ app.post("/api/spaces/:spaceId/tasks", requireAuth, async (req, res) => {
       labels: labels || [],
       estimatedHours: estimatedHours || null,
       actualHours: actualHours || null,
-      attachments: attachments || [],
+      attachments: [],
     });
+
+    if (attachments && attachments.length > 0) {
+      const finalUrls = await syncTaskAttachments(task.id, attachments, userId);
+      await storage.updateTask(task.id, { attachments: finalUrls });
+      task.attachments = finalUrls;
+    }
 
     // Log activity
     await storage.logActivity({
@@ -3222,6 +3375,10 @@ app.patch("/api/tasks/:id", requireAuth, async (req, res) => {
     const updates = req.body;
     // Capture the task before update so workflows can detect what changed
     const oldTask = await storage.getTask(taskId);
+    if (updates.attachments !== undefined) {
+      const finalUrls = await syncTaskAttachments(taskId, updates.attachments, userId);
+      updates.attachments = finalUrls;
+    }
     const updatedTask = await storage.updateTask(taskId, updates);
 
     if (!updatedTask) {
@@ -3872,6 +4029,40 @@ app.patch("/api/spaces/:spaceId/tasks/reorder", requireAuth, async (req, res) =>
     } catch (error) {
       console.error("Error fetching attachments:", error);
       res.status(500).json({ message: "Failed to fetch attachments" });
+    }
+  });
+
+  app.post("/api/project-attachments/:projectId/upload", requireAuth, upload.single("file"), async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      const file = (req as any).file as Express.Multer.File | undefined;
+      const userId = (req.user as any)?.id;
+
+      if (!userId) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      if (!file) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+
+      // Upload file to AWS S3
+      const s3Result = await uploadFileToS3(file, projectId);
+
+      const [attachment] = await db
+        .insert(projectAttachments)
+        .values({
+          projectId,
+          fileName: file.originalname,
+          fileUrl: s3Result.publicUrl,
+          fileSize: file.size,
+          uploadedBy: userId,
+        })
+        .returning();
+
+      res.status(201).json(attachment);
+    } catch (error: any) {
+      console.error("Error uploading project attachment:", error);
+      res.status(500).json({ message: "Failed to upload project attachment", error: error.message });
     }
   });
 

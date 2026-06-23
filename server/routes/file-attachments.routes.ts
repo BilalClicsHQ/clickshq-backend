@@ -18,6 +18,7 @@ import multer from "multer";
 import { requireAuth } from "../auth";
 import { storage } from "../storage";
 import { getToken, getValidToken } from "../services/tokenService";
+import { uploadFileToS3 } from "../services/s3Service";
 
 // In-memory upload for serverless compatibility; max 25 MB per file
 const upload = multer({
@@ -305,54 +306,56 @@ router.post(
           .json({ success: false, error: { code: "NO_FILE" } });
       }
 
-      const sizeMB = file.size / (1024 * 1024);
-      const dataUrl =
-        sizeMB <= 2
-          ? `data:${file.mimetype};base64,${file.buffer.toString("base64")}`
-          : null;
+      // Upload file to AWS S3
+      const s3Result = await uploadFileToS3(file, taskId);
 
       const attachment = await storage.createFileAttachment({
         taskId,
-        provider: "upload",
-        externalId: `local-${Date.now()}`,
+        provider: "s3",
+        externalId: s3Result.key,
         name: file.originalname,
         mimeType: file.mimetype,
         size: file.size,
-        externalUrl: dataUrl,
-        downloadUrl: dataUrl,
-        embedUrl: dataUrl,
-        thumbnailUrl: file.mimetype.startsWith("image/") ? dataUrl : null,
+        externalUrl: s3Result.publicUrl,
+        downloadUrl: s3Result.publicUrl,
+        embedUrl: s3Result.publicUrl,
+        thumbnailUrl: file.mimetype.startsWith("image/") ? s3Result.publicUrl : null,
         iconUrl: null,
         ownerName: null,
         modifiedAt: new Date(),
         attachedBy: user.id,
         metadata: {
           uploadedDirectly: true,
-          tooLargeForInline: dataUrl === null,
+          s3Bucket: s3Result.bucket,
+          s3Key: s3Result.key,
+          s3Region: s3Result.region,
         },
       });
 
       // Render as a comment card with the file attached (ClickUp-style)
-      await storage
-        .createTaskActivity({
-          taskId,
-          type: "task_comment",
-          actorUserId: user.id,
-          payload: {
-            text: "",
-            attachment: {
-              attachmentId: attachment.id,
-              name: file.originalname,
-              size: file.size,
-              mimeType: file.mimetype,
-              url: dataUrl ?? null,
+      if (!taskId.startsWith("temp")) {
+        await storage
+          .createTaskActivity({
+            taskId,
+            type: "task_comment",
+            actorUserId: user.id,
+            payload: {
+              text: "",
+              attachment: {
+                attachmentId: attachment.id,
+                name: file.originalname,
+                size: file.size,
+                mimeType: file.mimetype,
+                url: s3Result.publicUrl,
+              },
             },
-          },
-        })
-        .catch(() => undefined);
+          })
+          .catch(() => undefined);
+      }
 
       return res.json({ success: true, data: { attachment } });
     } catch (err: any) {
+      console.error("[S3 Upload Route Error]:", err);
       return res
         .status(500)
         .json({ success: false, error: { code: "INTERNAL", message: err.message } });
