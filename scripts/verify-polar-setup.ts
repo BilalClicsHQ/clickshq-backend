@@ -3,12 +3,22 @@
 // only things that can be wrong are credentials and product configuration — this
 // verifies both against the LIVE Polar API before a deploy.
 //
-//   npx tsx --env-file=.env scripts/verify-polar-setup.ts
+//   npx tsx --env-file=.env scripts/verify-polar-setup.ts              # POLAR_SERVER
+//   npx tsx --env-file=.env scripts/verify-polar-setup.ts --production # force prod
+//   npx tsx --env-file=.env scripts/verify-polar-setup.ts --sandbox    # force sandbox
 //
-// Read-only: it lists and reads products, never creates or charges anything.
-// Exits non-zero if anything would break billing in the configured environment.
+// READ-ONLY AND FREE. It only performs GETs (read a product, list one product to
+// test the token) and inspects env — it never creates a checkout, subscription or
+// order, and never charges anyone. Checking production therefore costs nothing;
+// use --production so you don't have to edit .env and risk leaving the app
+// pointed at the live environment.
+//
+// Exits non-zero if anything would break billing in the environment checked.
 // ─────────────────────────────────────────────────────────────────────────────
-const SERVER = process.env.POLAR_SERVER === "production" ? "production" : "sandbox";
+const forced = process.argv.includes("--production") ? "production"
+  : process.argv.includes("--sandbox") ? "sandbox"
+  : null;
+const SERVER = forced ?? (process.env.POLAR_SERVER === "production" ? "production" : "sandbox");
 const SANDBOX = SERVER === "sandbox";
 const API = SANDBOX ? "https://sandbox-api.polar.sh" : "https://api.polar.sh";
 
@@ -100,6 +110,52 @@ for (const [interval, id] of Object.entries(products) as ["monthly" | "yearly", 
     const tiers = priced.seat_tiers?.tiers ?? [];
     if (tiers.length > 1) {
       fail(`${interval}: "${p.name}" has ${tiers.length} volume tiers, but the pricing page shows one flat per-seat price`);
+    }
+  }
+}
+
+// ── Organization readiness ────────────────────────────────────────────────────
+// Polar only releases real payments once the org has submitted its details and
+// has a payout account. An org still in "created" cannot take money, so checkout
+// would fail for real customers no matter how correct the code is.
+if (token) {
+  const res = await fetch(`${API}/v1/organizations/?limit=1`, { headers: { Authorization: `Bearer ${token.trim()}` } });
+  const org: any = res.ok ? (await res.json()).items?.[0] : null;
+  if (!org) fail("could not read the organization");
+  else {
+    console.log(`  organization: ${org.name} (${org.slug})`);
+    if (!org.feature_settings?.seat_based_pricing_enabled) {
+      fail("seat-based pricing is NOT enabled on this organization — seat products cannot be sold");
+    } else pass("seat-based pricing enabled");
+
+    if (SERVER === "production") {
+      if (!org.details_submitted_at) fail(`organization status is "${org.status}" with no details submitted — Polar will not accept real payments until onboarding is completed`);
+      else if (!org.payout_account_id) fail("organization has no payout account — revenue cannot be paid out");
+      else pass(`organization onboarded (status ${org.status})`);
+    }
+  }
+}
+
+// ── Webhook endpoint registration ─────────────────────────────────────────────
+// A wrong path here fails silently: Polar keeps delivering, our server 404s, and
+// subscription state never syncs.
+if (token) {
+  const res = await fetch(`${API}/v1/webhooks/endpoints/?limit=20`, { headers: { Authorization: `Bearer ${token.trim()}` } });
+  const endpoints: any[] = res.ok ? (await res.json()).items ?? [] : [];
+  if (!endpoints.length) {
+    fail("no webhook endpoint registered — subscription changes will never reach this app");
+  } else {
+    for (const e of endpoints) {
+      const url: string = e.url ?? "";
+      const decoded = decodeURIComponent(url);
+      if (!decoded.endsWith("/api/webhooks/polar")) {
+        fail(`webhook URL does not end in /api/webhooks/polar — every delivery will 404:\n      ${url}` +
+          (decoded !== url ? `\n      decodes to: ${decoded}` : ""));
+      } else if (SERVER === "production" && /trycloudflare\.com|ngrok|localhost|\.local\b/.test(url)) {
+        fail(`webhook points at a temporary tunnel, not a stable production host:\n      ${url}`);
+      } else {
+        pass(`webhook endpoint: ${url} (${(e.events ?? []).length} events)`);
+      }
     }
   }
 }
