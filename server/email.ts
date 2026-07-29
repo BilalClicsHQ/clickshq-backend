@@ -39,75 +39,8 @@ if (!hasEmailCredentials) {
   );
 }
 
-// ── Billing / dunning emails ──────────────────────────────────────────────────
-const money = (cents: number, currency = "usd") => {
-  try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency: currency.toUpperCase() }).format(cents / 100);
-  } catch {
-    return `$${(cents / 100).toFixed(2)}`;
-  }
-};
-
-function billingPortalUrl(): string {
-  const base = process.env.BILLING_RETURN_URL || process.env.FRONTEND_URL || "http://localhost:5173";
-  // BILLING_RETURN_URL already points at /billing; otherwise append it.
-  return base.includes("/billing") ? base : `${base.replace(/\/$/, "")}/billing`;
-}
-
-/** Renewal/charge failed — ask the customer to update their card. */
-export async function sendPaymentFailedEmail(opts: {
-  email: string;
-  displayName: string;
-  amountCents: number;
-  currency: string;
-  attempt: number;
-  graceEndsAt?: Date | null;
-}) {
-  const url = billingPortalUrl();
-  const deadline = opts.graceEndsAt
-    ? new Date(opts.graceEndsAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
-    : null;
-  const mailOptions = {
-    from: `"ClicsHQ" <${process.env.GMAIL_USER}>`,
-    to: opts.email,
-    subject: "Action needed: your ClicsHQ payment failed",
-    html: `
-      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto;">
-        <h2>We couldn't process your payment</h2>
-        <p>Hi ${opts.displayName || "there"},</p>
-        <p>We tried to charge <strong>${money(opts.amountCents, opts.currency)}</strong> for your ClicsHQ
-        subscription but the payment didn't go through (attempt ${opts.attempt}).</p>
-        ${deadline ? `<p>Please update your payment method before <strong>${deadline}</strong> to keep your plan. After that your workspace will move to the free plan.</p>` : `<p>Please update your payment method to keep your plan.</p>`}
-        <p><a href="${url}" style="display:inline-block;background:#000;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;">Update payment method</a></p>
-        <p style="color:#888;font-size:12px;">If you've already updated your card, you can ignore this email.</p>
-      </div>`,
-  };
-  return transporter.sendMail(mailOptions);
-}
-
-/** Grace period elapsed — the workspace was downgraded to the free plan. */
-export async function sendSubscriptionDowngradedEmail(opts: {
-  email: string;
-  displayName: string;
-  planKey: string;
-}) {
-  const url = billingPortalUrl();
-  const mailOptions = {
-    from: `"ClicsHQ" <${process.env.GMAIL_USER}>`,
-    to: opts.email,
-    subject: "Your ClicsHQ subscription was canceled",
-    html: `
-      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto;">
-        <h2>Your subscription has ended</h2>
-        <p>Hi ${opts.displayName || "there"},</p>
-        <p>We weren't able to collect payment for your <strong>${opts.planKey}</strong> plan, so your workspace
-        has been moved to the free plan. Your data is safe.</p>
-        <p>You can re-subscribe anytime:</p>
-        <p><a href="${url}" style="display:inline-block;background:#000;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;">View plans</a></p>
-      </div>`,
-  };
-  return transporter.sendMail(mailOptions);
-}
+// Billing emails (payment failed / downgraded) are sent by Polar, which owns
+// renewals and dunning — this app no longer sends any.
 
 export async function send2FACodeEmail(
   email: string,
