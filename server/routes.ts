@@ -48,6 +48,9 @@ import salesforceRoutes from "./routes/salesforce.routes";
 import gmailRoutes from "./routes/gmail.routes";
 import onedriveRoutes from "./routes/onedrive.routes";
 import notificationRoutes from "./routes/notifications.routes";
+import billingRoutes from "./routes/billing.routes";
+import polarWebhooksRoutes from "./routes/polar-webhooks.routes";
+import entitlementsRoutes from "./routes/entitlements.routes";
 
 const { authenticator } = otplib;
 
@@ -63,7 +66,7 @@ async function upsertRecentActivity(db: any, userId: string, spaceId: string) {
       .update(spaceRecentActivity)
       .set({ lastActivityAt: new Date() })
       .where(and(eq(spaceRecentActivity.userId, userId), eq(spaceRecentActivity.spaceId, spaceId)));
-  } else {
+  } else { 
     await db.insert(spaceRecentActivity).values({ userId, spaceId, lastActivityAt: new Date() });
   }
 }
@@ -3956,6 +3959,11 @@ app.patch("/api/spaces/:spaceId/tasks/reorder", requireAuth, async (req, res) =>
   app.use('/api/integrations/files', fileAttachmentsRoutes);
   app.use('/api/tasks', taskSubtasksChecklistsRoutes);
   app.use('/api/notifications', notificationRoutes);
+  // Billing (Polar payment gateway) + Polar webhook receiver
+  app.use('/api/billing', billingRoutes);
+  app.use('/api/webhooks', polarWebhooksRoutes);
+  // Entitlements / feature-access (plan -> features layer on top of billing)
+  app.use('/api/entitlements', entitlementsRoutes);
 }
 
 // Dev / local: register all routes, then wrap in an HTTP server (with .listen).

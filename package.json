@@ -5,6 +5,7 @@
   "license": "MIT",
   "scripts": {
     "dev": "cross-env NODE_ENV=development tsx --env-file=.env server/index.ts",
+    "dev:watch": "cross-env NODE_ENV=development tsx watch --env-file=.env server/index.ts",
     "build": "node build-vercel.mjs",
     "start": "cross-env NODE_ENV=production node dist/index.js",
     "check": "tsc",
@@ -16,6 +17,7 @@
     "@hocuspocus/provider": "^3.4.4",
     "@jridgewell/trace-mapping": "^0.3.25",
     "@neondatabase/serverless": "^0.10.4",
+    "@polar-sh/sdk": "^0.48.1",
     "bcrypt": "^6.0.0",
     "connect-pg-simple": "^10.0.0",
     "cors": "^2.8.5",

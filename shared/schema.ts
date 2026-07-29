@@ -1693,3 +1693,139 @@ export const insertTaskChecklistItemSchema = createInsertSchema(taskChecklistIte
 
 export type TaskChecklistItem = typeof taskChecklistItems.$inferSelect;
 export type InsertTaskChecklistItem = z.infer<typeof insertTaskChecklistItemSchema>;
+
+// ── Billing / Polar subscriptions ────────────────────────────────────────────
+// One row per Polar subscription, kept in sync by the Polar webhook
+// (server/routes/polar-webhooks.routes.ts). `userId` is resolved from the
+// checkout's customerExternalId / subscription metadata.
+export const subscriptions = pgTable("subscriptions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(),
+  // Polar identifiers
+  polarSubscriptionId: text("polar_subscription_id").notNull().unique(),
+  polarCustomerId: text("polar_customer_id"),
+  polarProductId: text("polar_product_id"),
+  // Snapshot of subscription state from Polar
+  status: text("status").notNull(), // active | trialing | past_due | canceled | revoked | incomplete | unpaid
+  productName: text("product_name"),
+  amount: integer("amount"), // smallest currency unit (e.g. cents)
+  currency: text("currency"),
+  recurringInterval: text("recurring_interval"), // month | year
+  cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+  currentPeriodStart: timestamp("current_period_start"),
+  currentPeriodEnd: timestamp("current_period_end"),
+  endsAt: timestamp("ends_at"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertSubscriptionSchema = createInsertSchema(subscriptions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type Subscription = typeof subscriptions.$inferSelect;
+export type InsertSubscription = z.infer<typeof insertSubscriptionSchema>;
+
+// ── Clics billing engine ──────────────────────────────────────────────────────
+// Workspace-scoped subscription model with a Clics-owned account-credit ledger.
+// Clics owns the billing math (see shared/billing-math.ts); Polar is only the
+// payment rail (off-session Orders API). These tables are the source of truth —
+// the legacy `subscriptions` table above is the older Polar-synced mirror.
+
+// One active subscription per workspace (company). `perSeatAmount` is a price
+// snapshot in the smallest currency unit and is authoritative for all proration.
+export const workspaceSubscriptions = pgTable("workspace_subscriptions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull(),
+  planKey: text("plan_key").notNull(), // matches entitlements PlanKey (e.g. "teams")
+  billingInterval: text("billing_interval").notNull(), // "month" | "year"
+  seats: integer("seats").notNull().default(1),
+  perSeatAmount: integer("per_seat_amount").notNull(), // cents per seat per interval
+  currency: text("currency").notNull().default("usd"),
+  status: text("status").notNull().default("active"), // active | past_due | canceled | incomplete
+  currentPeriodStart: timestamp("current_period_start").notNull(),
+  currentPeriodEnd: timestamp("current_period_end").notNull(),
+  cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+  canceledAt: timestamp("canceled_at"),
+  // Polar linkage for charging the saved card off-session.
+  polarCustomerId: text("polar_customer_id"),
+  polarChargeProductId: text("polar_charge_product_id"),
+  // Dunning / retry state — set when a renewal charge fails. While past_due the
+  // workspace keeps its plan until `gracePeriodEndsAt`, after which it downgrades
+  // to free. `nextRetryAt` schedules the next off-session retry (backoff).
+  failedPaymentCount: integer("failed_payment_count").notNull().default(0),
+  lastPaymentError: text("last_payment_error"),
+  lastPaymentAttemptAt: timestamp("last_payment_attempt_at"),
+  nextRetryAt: timestamp("next_retry_at"),
+  gracePeriodEndsAt: timestamp("grace_period_ends_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Append-only audit of every credit/debit, with the running balance after each
+// entry. No cash refunds — downgrades land here as credit (see brief §3/§5/§7).
+export const billingCreditLedger = pgTable("billing_credit_ledger", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull(),
+  direction: text("direction").notNull(), // "credit" | "debit"
+  amount: integer("amount").notNull(), // cents, always >= 0
+  balanceAfter: integer("balance_after").notNull(), // credit balance after this entry, cents
+  reason: text("reason").notNull(), // seat_removed | plan_downgrade | cycle_switch | credit_applied | adjustment
+  description: text("description"),
+  relatedInvoiceId: varchar("related_invoice_id"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Every charge we make (new purchase, proration, renewal). Mirrors the Polar
+// order. `periodKey` makes renewals idempotent (one invoice per company+period).
+export const billingInvoices = pgTable("billing_invoices", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull(),
+  type: text("type").notNull(), // new | renewal | seat_add | plan_upgrade | cycle_switch
+  periodStart: timestamp("period_start"),
+  periodEnd: timestamp("period_end"),
+  planKey: text("plan_key").notNull(),
+  billingInterval: text("billing_interval").notNull(),
+  seats: integer("seats").notNull(),
+  subtotalCents: integer("subtotal_cents").notNull(),
+  creditAppliedCents: integer("credit_applied_cents").notNull().default(0),
+  totalChargedCents: integer("total_charged_cents").notNull(),
+  currency: text("currency").notNull().default("usd"),
+  status: text("status").notNull().default("open"), // open | paid | failed | void
+  polarOrderId: text("polar_order_id"),
+  periodKey: text("period_key").unique(), // idempotency: `${companyId}:${periodStart ISO}`
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// O(1) credit-balance cache per workspace, kept in sync with the ledger.
+export const accountCredit = pgTable("account_credit", {
+  companyId: varchar("company_id").primaryKey(),
+  balanceCents: integer("balance_cents").notNull().default(0),
+  currency: text("currency").notNull().default("usd"),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertWorkspaceSubscriptionSchema = createInsertSchema(workspaceSubscriptions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export const insertBillingCreditLedgerSchema = createInsertSchema(billingCreditLedger).omit({
+  id: true,
+  createdAt: true,
+});
+export const insertBillingInvoiceSchema = createInsertSchema(billingInvoices).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type WorkspaceSubscription = typeof workspaceSubscriptions.$inferSelect;
+export type InsertWorkspaceSubscription = z.infer<typeof insertWorkspaceSubscriptionSchema>;
+export type BillingCreditLedgerEntry = typeof billingCreditLedger.$inferSelect;
+export type InsertBillingCreditLedgerEntry = z.infer<typeof insertBillingCreditLedgerSchema>;
+export type BillingInvoice = typeof billingInvoices.$inferSelect;
+export type InsertBillingInvoice = z.infer<typeof insertBillingInvoiceSchema>;
+export type AccountCredit = typeof accountCredit.$inferSelect;

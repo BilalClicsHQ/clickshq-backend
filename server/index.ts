@@ -2,6 +2,8 @@ import express, { type Request, Response, NextFunction } from "express";
 import session from "express-session";
 import passport from "passport";
 import cors from "cors";
+import connectPgSimple from "connect-pg-simple";
+import { pool } from "./db";
 import { registerRoutes } from "./routes";
 import { setupAuth } from "./auth";
 // Migrated from Nexus: workflow + Slack integration crons
@@ -73,8 +75,13 @@ app.use(express.urlencoded({
 // Trust proxy for cloud deployments
 app.set('trust proxy', 1);
 
-// Session configuration — cross-site cookies in production (frontend on a different origin)
+// Session configuration — cross-site cookies in production (frontend on a different origin).
+// Persist sessions in Postgres so they survive server restarts (dev:watch reloads,
+// deploys). The default in-memory store dropped every session on restart, which logged
+// users out (e.g. the login page appearing on /billing). Mirrors api/handler.ts.
+const PgSession = connectPgSimple(session);
 app.use(session({
+  store: new PgSession({ pool: pool as any, tableName: "session", createTableIfMissing: true }),
   secret: process.env.SESSION_SECRET || 'your-secret-key-change-this',
   resave: false,
   saveUninitialized: false,
@@ -155,5 +162,8 @@ app.use((req, res, next) => {
       }
     }, 24 * 60 * 60 * 1000);
     log("Slack Daily Digest cron scheduled (every 24h)");
+
+    // No billing cron: Polar owns renewals and dunning. Subscription state reaches
+    // us through the /api/webhooks/polar receiver, not a scheduler.
   });
 })();
