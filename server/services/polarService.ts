@@ -248,9 +248,22 @@ export async function getCheckout(checkoutId: string): Promise<ConfirmedCheckout
 // ── Customer portal ──────────────────────────────────────────────────────────
 // Creates a customer session and returns the hosted customer-portal URL where
 // the customer can manage their subscription, payment methods, and invoices.
+//
+// Seat-based products make the buyer a "team customer" in Polar, and a session for
+// a team customer REQUIRES identifying which member it is for — without it Polar
+// rejects the call with "member_id is required for team customers". Since Teams is
+// our only paid plan and it is seat-based, every paying customer hits that path.
+// Polar creates an owner member whose external_id is the same user id we set as
+// externalCustomerId, so the same id identifies both. Non-team customers reject
+// the member field, hence the retry.
 export async function createPortalUrl(userId: string): Promise<string> {
   const polar = getClient();
-  const session: any = await polar.customerSessions.create({ externalCustomerId: userId });
+  let session: any;
+  try {
+    session = await polar.customerSessions.create({ externalCustomerId: userId, externalMemberId: userId });
+  } catch {
+    session = await polar.customerSessions.create({ externalCustomerId: userId });
+  }
   const url = session?.customerPortalUrl ?? session?.customer_portal_url;
   if (!url) throw new Error("Polar did not return a customer portal URL");
   return url as string;

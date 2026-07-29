@@ -58,9 +58,11 @@ if (!webhookSecret) {
 }
 
 // ── Products ──────────────────────────────────────────────────────────────────
-// A seat-based subscription can only prorate on a RECURRING, FIXED-PRICE product.
-// A pay-what-you-want ("custom") price cannot prorate — seat and plan changes
-// would silently produce wrong amounts. This is the check that matters most.
+// Seat changes can only prorate on a RECURRING product with a deterministic price:
+// `seat_based` (per-seat tiers — what the Teams plans use) or `fixed`. A
+// pay-what-you-want (`custom`) price has no per-seat amount to prorate against, so
+// seat and plan changes would silently produce wrong amounts. This is the check
+// that matters most.
 for (const [interval, id] of Object.entries(products) as ["monthly" | "yearly", string | undefined][]) {
   const varName = SANDBOX ? `POLAR_SANDBOX_PRODUCT_TEAMS_${interval.toUpperCase()}` : `POLAR_PRODUCT_TEAMS_${interval.toUpperCase()}`;
   if (!id) { fail(`${interval}: not configured (${varName})`); continue; }
@@ -71,9 +73,11 @@ for (const [interval, id] of Object.entries(products) as ["monthly" | "yearly", 
 
   const p: any = await res.json();
   const wantInterval = interval === "monthly" ? "month" : "year";
-  const prices: any[] = p.prices ?? [];
+  const prices: any[] = (p.prices ?? []).filter((pr: any) => !pr.is_archived);
   const priceKinds = prices.map((pr) => pr.amount_type);
-  const fixed = prices.find((pr) => pr.amount_type === "fixed");
+  // seat_based exposes price_per_seat; fixed exposes price_amount. Either prorates.
+  const priced = prices.find((pr) => pr.amount_type === "seat_based" || pr.amount_type === "fixed");
+  const perSeat = priced?.price_per_seat ?? priced?.price_amount ?? null;
 
   if (p.is_archived) fail(`${interval}: product "${p.name}" is ARCHIVED`);
   if (!p.is_recurring) fail(`${interval}: "${p.name}" is one-time, not a subscription product`);
@@ -81,17 +85,21 @@ for (const [interval, id] of Object.entries(products) as ["monthly" | "yearly", 
     fail(`${interval}: "${p.name}" renews per ${p.recurring_interval}, expected ${wantInterval}`);
   }
 
-  if (!fixed) {
-    fail(`${interval}: "${p.name}" has no fixed price (found: ${priceKinds.join(", ") || "none"}). ` +
-      `Pay-what-you-want products CANNOT prorate seat or plan changes — create a fixed-price seat product.`);
+  if (!priced || perSeat == null) {
+    fail(`${interval}: "${p.name}" has no seat_based or fixed price (found: ${priceKinds.join(", ") || "none"}). ` +
+      `A pay-what-you-want price cannot prorate seat or plan changes.`);
   } else {
-    const cents = fixed.price_amount;
     const want = EXPECTED_CENTS[interval];
-    if (cents !== want) {
-      fail(`${interval}: "${p.name}" costs ${(cents / 100).toFixed(2)} ${fixed.price_currency ?? ""} per seat, ` +
+    if (perSeat !== want) {
+      fail(`${interval}: "${p.name}" costs $${(perSeat / 100).toFixed(2)} ${priced.price_currency ?? ""} per seat, ` +
         `but the pricing page advertises $${(want / 100).toFixed(0)} — customers would be charged a different amount than shown`);
     } else {
-      pass(`${interval}: "${p.name}" — recurring/${p.recurring_interval}, fixed $${(cents / 100).toFixed(2)}/seat`);
+      pass(`${interval}: "${p.name}" — recurring/${p.recurring_interval}, ${priced.amount_type} $${(perSeat / 100).toFixed(2)}/seat`);
+    }
+    // Volume tiers beyond the first would make the advertised flat per-seat price wrong.
+    const tiers = priced.seat_tiers?.tiers ?? [];
+    if (tiers.length > 1) {
+      fail(`${interval}: "${p.name}" has ${tiers.length} volume tiers, but the pricing page shows one flat per-seat price`);
     }
   }
 }
