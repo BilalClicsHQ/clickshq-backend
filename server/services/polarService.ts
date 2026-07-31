@@ -401,10 +401,33 @@ export async function getCustomerBilling(userId: string): Promise<CustomerBillin
 
 export async function updateCustomerBilling(
   userId: string,
-  input: { name?: string | null; city?: string | null; state?: string | null; postalCode?: string | null; country?: string | null },
+  input: {
+    email?: string | null;
+    name?: string | null;
+    city?: string | null;
+    state?: string | null;
+    postalCode?: string | null;
+    country?: string | null;
+  },
 ): Promise<CustomerBilling> {
   const polar = getClient();
-  const current: any = await polar.customers.getExternal({ externalId: userId });
+
+  // A Polar customer only exists after a first checkout. Someone filling in their
+  // billing details BEFORE subscribing (the empty state of the Invoices tab) has
+  // none, so create one — otherwise the form would appear to save and then lose
+  // everything but the phone number on reload.
+  let current: any = null;
+  try {
+    current = await polar.customers.getExternal({ externalId: userId });
+  } catch {
+    if (!input.email) throw new Error("Cannot create a Polar customer without an email");
+    current = await polar.customers.create({
+      externalId: userId,
+      email: input.email,
+      ...(input.name ? { name: input.name } : {}),
+    } as any);
+  }
+
   const a = current?.billingAddress ?? current?.billing_address ?? {};
   // Polar requires a country on the address; keep the existing one when the form
   // doesn't supply it, and drop the address entirely if we still have none.

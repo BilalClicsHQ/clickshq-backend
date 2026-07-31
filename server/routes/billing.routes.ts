@@ -266,25 +266,37 @@ router.patch("/customer", requireAuth, async (req: Request, res: Response) => {
     if (phoneVal !== undefined) {
       await db.update(users).set({ phone: phoneVal || null }).where(eq(users.id, user.id));
     }
-    // The Polar customer only exists after a first checkout; skip it until then so
-    // a free user can still save their details locally.
-    let billing = null;
-    if (isPolarConfigured() && (await getCustomerBilling(user.id))) {
-      billing = await updateCustomerBilling(user.id, {
-        name: str(name),
-        city: str(city),
-        state: str(state),
-        postalCode: str(postalCode),
-        country: str(country),
-      });
+    // updateCustomerBilling creates the Polar customer if there isn't one yet, so
+    // a user can fill this in before ever subscribing. Only report back what Polar
+    // actually stored — echoing the submitted values would claim a save that
+    // didn't happen.
+    if (!isPolarConfigured()) {
+      return res.json({ name: null, phone: phoneVal ?? null, city: null, state: null, postalCode: null, country: null });
     }
+    // Polar stores an address only with a country (it drives tax). Fall back to the
+    // user's profile country, and if there still isn't one, say so instead of
+    // accepting the address and quietly discarding it.
+    const [profile] = await db.select({ country: users.country }).from(users).where(eq(users.id, user.id)).limit(1);
+    const effectiveCountry = str(country) || profile?.country || (await getCustomerBilling(user.id))?.billingAddress?.country;
+    if ((str(city) || str(state) || str(postalCode)) && !effectiveCountry) {
+      return res.status(400).json({ error: "Select a country to save your billing address." });
+    }
+    const billing = await updateCustomerBilling(user.id, {
+      email: user.email,
+      name: str(name),
+      city: str(city),
+      state: str(state),
+      postalCode: str(postalCode),
+      country: effectiveCountry || undefined,
+    });
     res.json({
-      name: billing?.name ?? str(name) ?? null,
+      name: billing.name,
+      email: billing.email,
       phone: phoneVal ?? null,
-      city: billing?.billingAddress?.city ?? str(city) ?? null,
-      state: billing?.billingAddress?.state ?? str(state) ?? null,
-      postalCode: billing?.billingAddress?.postalCode ?? str(postalCode) ?? null,
-      country: billing?.billingAddress?.country ?? str(country) ?? null,
+      city: billing.billingAddress?.city ?? null,
+      state: billing.billingAddress?.state ?? null,
+      postalCode: billing.billingAddress?.postalCode ?? null,
+      country: billing.billingAddress?.country ?? null,
     });
   } catch (err: any) {
     console.error("[billing] customer update error:", err?.message ?? err);
