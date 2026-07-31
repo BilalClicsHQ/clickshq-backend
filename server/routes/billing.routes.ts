@@ -25,7 +25,15 @@ import {
   updateSubscriptionSeats,
   changeSubscriptionProduct,
   cancelActiveSubscription,
+  getCustomerBilling,
+  updateCustomerBilling,
+  listPaymentMethods,
+  deletePaymentMethod,
+  findDiscountByCode,
 } from "../services/polarService";
+import { db } from "../db";
+import { users } from "@shared/schema";
+import { eq } from "drizzle-orm";
 
 const router = Router();
 
@@ -87,10 +95,20 @@ router.post("/checkout", requireAuth, async (req: Request, res: Response) => {
       return res.status(409).json({ error: "You already have this plan." });
     }
 
+    // Optional promo code — resolved to a Polar discount so the hosted checkout
+    // opens with it already applied.
+    let discountId: string | null = null;
+    if (typeof req.body?.promoCode === "string" && req.body.promoCode.trim()) {
+      const promo = await findDiscountByCode(req.body.promoCode);
+      if (!promo) return res.status(400).json({ error: "That promo code isn't valid." });
+      discountId = promo.id;
+    }
+
     const { url } = await createCheckout(
       { id: user.id, email: user.email, displayName: user.displayName },
       productId,
       seatCount,
+      discountId,
     );
     res.json({ url });
   } catch (err: any) {
@@ -194,6 +212,108 @@ router.post("/cancel", requireAuth, async (req: Request, res: Response) => {
     if (err?.message === "NO_ACTIVE_SUBSCRIPTION") return res.status(409).json({ error: "No active subscription" });
     console.error("[billing] cancel error:", err?.message ?? err);
     res.status(502).json({ error: "Failed to cancel subscription" });
+  }
+});
+
+// POST /api/billing/promo — validate a promo code for the Summary panel.
+router.post("/promo", requireAuth, async (req: Request, res: Response) => {
+  if (!isPolarConfigured()) return notConfigured(res);
+  const code = typeof req.body?.code === "string" ? req.body.code : "";
+  if (!code.trim()) return res.status(400).json({ error: "Enter a promo code" });
+  try {
+    const promo = await findDiscountByCode(code);
+    if (!promo) return res.status(404).json({ error: "That promo code isn't valid." });
+    res.json(promo);
+  } catch (err: any) {
+    console.error("[billing] promo error:", err?.message ?? err);
+    res.status(502).json({ error: "Couldn't check that code" });
+  }
+});
+
+// ── Billing details (Invoices tab) ────────────────────────────────────────────
+// Name/address live on the Polar customer (they appear on Polar's invoices);
+// phone has no Polar equivalent, so it comes from our users row.
+
+// GET /api/billing/customer — billing name, address and phone for the form.
+router.get("/customer", requireAuth, async (req: Request, res: Response) => {
+  const user = req.user as any;
+  try {
+    const [row] = await db.select({ phone: users.phone, displayName: users.displayName, email: users.email })
+      .from(users).where(eq(users.id, user.id)).limit(1);
+    const billing = isPolarConfigured() ? await getCustomerBilling(user.id) : null;
+    res.json({
+      name: billing?.name ?? row?.displayName ?? null,
+      email: billing?.email ?? row?.email ?? null,
+      phone: row?.phone ?? null,
+      city: billing?.billingAddress?.city ?? null,
+      state: billing?.billingAddress?.state ?? null,
+      postalCode: billing?.billingAddress?.postalCode ?? null,
+      country: billing?.billingAddress?.country ?? null,
+    });
+  } catch (err: any) {
+    console.error("[billing] customer get error:", err?.message ?? err);
+    res.status(500).json({ error: "Failed to load billing details" });
+  }
+});
+
+// PATCH /api/billing/customer — save the billing-information form.
+router.patch("/customer", requireAuth, async (req: Request, res: Response) => {
+  const user = req.user as any;
+  const { name, phone, city, state, postalCode, country } = req.body ?? {};
+  const str = (v: any) => (typeof v === "string" ? v.trim().slice(0, 200) : undefined);
+  try {
+    const phoneVal = str(phone);
+    if (phoneVal !== undefined) {
+      await db.update(users).set({ phone: phoneVal || null }).where(eq(users.id, user.id));
+    }
+    // The Polar customer only exists after a first checkout; skip it until then so
+    // a free user can still save their details locally.
+    let billing = null;
+    if (isPolarConfigured() && (await getCustomerBilling(user.id))) {
+      billing = await updateCustomerBilling(user.id, {
+        name: str(name),
+        city: str(city),
+        state: str(state),
+        postalCode: str(postalCode),
+        country: str(country),
+      });
+    }
+    res.json({
+      name: billing?.name ?? str(name) ?? null,
+      phone: phoneVal ?? null,
+      city: billing?.billingAddress?.city ?? str(city) ?? null,
+      state: billing?.billingAddress?.state ?? str(state) ?? null,
+      postalCode: billing?.billingAddress?.postalCode ?? str(postalCode) ?? null,
+      country: billing?.billingAddress?.country ?? str(country) ?? null,
+    });
+  } catch (err: any) {
+    console.error("[billing] customer update error:", err?.message ?? err);
+    res.status(502).json({ error: "Failed to save billing details" });
+  }
+});
+
+// GET /api/billing/payment-methods — saved cards (brand / last4 / expiry).
+router.get("/payment-methods", requireAuth, async (req: Request, res: Response) => {
+  if (!isPolarConfigured()) return res.json({ paymentMethods: [] });
+  try {
+    res.json({ paymentMethods: await listPaymentMethods((req.user as any)?.id) });
+  } catch (err: any) {
+    console.error("[billing] payment methods error:", err?.message ?? err);
+    res.json({ paymentMethods: [] });
+  }
+});
+
+// DELETE /api/billing/payment-methods/:id — remove a saved card.
+// Adding one is NOT here: Polar requires a Stripe confirmation token for that,
+// which would mean handling raw card details. New cards go through checkout.
+router.delete("/payment-methods/:id", requireAuth, async (req: Request, res: Response) => {
+  if (!isPolarConfigured()) return notConfigured(res);
+  try {
+    await deletePaymentMethod((req.user as any)?.id, req.params.id);
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error("[billing] payment method delete error:", err?.message ?? err);
+    res.status(502).json({ error: "Failed to remove the card" });
   }
 });
 

@@ -113,10 +113,42 @@ export interface CheckoutUser {
   displayName?: string | null;
 }
 
+// ── Discounts (promo codes) ──────────────────────────────────────────────────
+export interface PromoCode {
+  id: string;
+  code: string;
+  name: string | null;
+  /** Human-readable value, e.g. "20% off" or "$5.00 off". */
+  label: string;
+}
+
+/** Look up an active discount by its customer-facing code. null if unknown. */
+export async function findDiscountByCode(code: string): Promise<PromoCode | null> {
+  const token = polarAccessToken();
+  if (!token) return null;
+  const wanted = code.trim().toUpperCase();
+  if (!wanted) return null;
+  const res = await fetch(`${polarApiBase()}/v1/discounts/?limit=100`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const data: any = await res.json();
+  const hit = (data?.items ?? []).find((d: any) => String(d.code ?? "").toUpperCase() === wanted);
+  if (!hit) return null;
+  const label =
+    hit.type === "percentage" && hit.basis_points != null
+      ? `${hit.basis_points / 100}% off`
+      : hit.amount != null
+      ? `$${(hit.amount / 100).toFixed(2)} off`
+      : "discount applied";
+  return { id: hit.id, code: hit.code, name: hit.name ?? null, label };
+}
+
 export async function createCheckout(
   user: CheckoutUser,
   productId: string,
   seats?: number,
+  discountId?: string | null,
 ): Promise<{ id: string; url: string }> {
   const polar = getClient();
   const successUrl = `${returnBase()}?status=success&checkout_id={CHECKOUT_ID}`;
@@ -128,6 +160,7 @@ export async function createCheckout(
     customerName: user.displayName ?? undefined,
     // Links the Polar customer back to our user; surfaced again on webhooks.
     externalCustomerId: user.id,
+    ...(discountId ? { discountId } : {}),
     metadata: { userId: user.id },
     // Seat-based pricing: pre-fill the seat quantity chosen in the UI so the
     // hosted checkout (and resulting invoice) is billed per seat. Ignored by
@@ -316,6 +349,151 @@ export async function listOrders(userId: string): Promise<BillingOrder[]> {
   } catch (err: any) {
     console.error("[polar] listOrders failed:", err?.message ?? err);
     return [];
+  }
+}
+
+// ── Customer billing details ─────────────────────────────────────────────────
+// Polar's customer record holds the billing name/address/tax id used on invoices.
+// It has NO phone field — the billing form's phone lives on our users row.
+export interface CustomerBilling {
+  name: string | null;
+  email: string | null;
+  billingAddress: {
+    line1: string | null;
+    line2: string | null;
+    city: string | null;
+    state: string | null;
+    postalCode: string | null;
+    country: string | null;
+  } | null;
+  taxId: string | null;
+}
+
+function toBilling(c: any): CustomerBilling {
+  const a = c?.billingAddress ?? c?.billing_address ?? null;
+  return {
+    name: c?.billingName ?? c?.billing_name ?? c?.name ?? null,
+    email: c?.email ?? null,
+    billingAddress: a
+      ? {
+          line1: a.line1 ?? null,
+          line2: a.line2 ?? null,
+          city: a.city ?? null,
+          state: a.state ?? null,
+          postalCode: a.postalCode ?? a.postal_code ?? null,
+          country: a.country ?? null,
+        }
+      : null,
+    taxId: c?.taxId ?? c?.tax_id ?? null,
+  };
+}
+
+/** The caller's Polar customer, or null if they've never checked out. */
+export async function getCustomerBilling(userId: string): Promise<CustomerBilling | null> {
+  const polar = getClient();
+  try {
+    const c: any = await polar.customers.getExternal({ externalId: userId });
+    return toBilling(c);
+  } catch {
+    return null; // no Polar customer yet — the UI shows an empty form
+  }
+}
+
+export async function updateCustomerBilling(
+  userId: string,
+  input: { name?: string | null; city?: string | null; state?: string | null; postalCode?: string | null; country?: string | null },
+): Promise<CustomerBilling> {
+  const polar = getClient();
+  const current: any = await polar.customers.getExternal({ externalId: userId });
+  const a = current?.billingAddress ?? current?.billing_address ?? {};
+  // Polar requires a country on the address; keep the existing one when the form
+  // doesn't supply it, and drop the address entirely if we still have none.
+  const country = (input.country ?? a.country ?? "").trim();
+  const billingAddress = country
+    ? {
+        line1: a.line1 ?? null,
+        line2: a.line2 ?? null,
+        city: input.city ?? a.city ?? null,
+        state: input.state ?? a.state ?? null,
+        postalCode: input.postalCode ?? a.postalCode ?? a.postal_code ?? null,
+        country,
+      }
+    : undefined;
+
+  const updated: any = await polar.customers.updateExternal({
+    externalId: userId,
+    customerUpdateExternalID: {
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(billingAddress ? { billingAddress } : {}),
+    } as any,
+  });
+  return toBilling(updated);
+}
+
+// ── Saved payment methods ────────────────────────────────────────────────────
+// Reading cards uses the organization token. Deleting one is a CUSTOMER-PORTAL
+// operation, so it needs a short-lived customer session token instead.
+//
+// There is deliberately no "add card" here: Polar's add-payment-method endpoint
+// requires a Stripe.js confirmation token, which would mean collecting raw card
+// details in our own page (PCI scope). Adding a card goes through Polar's
+// checkout instead — see createCheckout.
+export interface SavedCard {
+  id: string;
+  brand: string | null;
+  last4: string | null;
+  expMonth: number | null;
+  expYear: number | null;
+  isDefault: boolean;
+}
+
+export async function listPaymentMethods(userId: string): Promise<SavedCard[]> {
+  const polar = getClient();
+  let customerId: string;
+  try {
+    const c: any = await polar.customers.getExternal({ externalId: userId });
+    customerId = c.id;
+  } catch {
+    return []; // no customer yet
+  }
+  const token = polarAccessToken();
+  const res = await fetch(`${polarApiBase()}/v1/customers/${customerId}/payment-methods?limit=20`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    console.error(`[polar] listPaymentMethods HTTP ${res.status}`);
+    return [];
+  }
+  const data: any = await res.json();
+  return (data?.items ?? []).map((pm: any) => ({
+    id: pm.id,
+    brand: pm.method_metadata?.brand ?? null,
+    last4: pm.method_metadata?.last4 ?? null,
+    expMonth: pm.method_metadata?.exp_month ?? null,
+    expYear: pm.method_metadata?.exp_year ?? null,
+    isDefault: pm.is_default === true,
+  }));
+}
+
+/** Short-lived customer-session token, used for customer-portal endpoints. */
+async function customerSessionToken(userId: string): Promise<string> {
+  const polar = getClient();
+  const session: any = await polar.customerSessions
+    .create({ externalCustomerId: userId, externalMemberId: userId } as any)
+    .catch(() => polar.customerSessions.create({ externalCustomerId: userId }));
+  const token = session?.token;
+  if (!token) throw new Error("Polar did not return a customer session token");
+  return token;
+}
+
+export async function deletePaymentMethod(userId: string, paymentMethodId: string): Promise<void> {
+  const token = await customerSessionToken(userId);
+  const res = await fetch(
+    `${polarApiBase()}/v1/customer-portal/customers/me/payment-methods/${encodeURIComponent(paymentMethodId)}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok && res.status !== 204) {
+    throw new Error(`Polar refused to delete the payment method (HTTP ${res.status})`);
   }
 }
 
