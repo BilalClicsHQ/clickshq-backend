@@ -9,3 +9,5 @@ vite.config.ts.*
 # Vercel build output
 api/index.js
 config.bat
+
+.env

