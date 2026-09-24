@@ -29,6 +29,7 @@ import {
   updateCustomerBilling,
   listPaymentMethods,
   deletePaymentMethod,
+  PaymentMethodDeleteError,
   findDiscountByCode,
 } from "../services/polarService";
 import { db } from "../db";
@@ -324,6 +325,12 @@ router.delete("/payment-methods/:id", requireAuth, async (req: Request, res: Res
     await deletePaymentMethod((req.user as any)?.id, req.params.id);
     res.json({ ok: true });
   } catch (err: any) {
+    // A refusal from Polar (e.g. it's the only card on an active subscription) is
+    // a rule the customer can act on — pass the reason through as a 409 instead of
+    // flattening it into a generic failure.
+    if (err instanceof PaymentMethodDeleteError) {
+      return res.status(409).json({ error: err.message, code: err.code });
+    }
     console.error("[billing] payment method delete error:", err?.message ?? err);
     res.status(502).json({ error: "Failed to remove the card" });
   }

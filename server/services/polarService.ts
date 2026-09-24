@@ -157,7 +157,9 @@ export async function createCheckout(
     products: [productId],
     successUrl,
     customerEmail: user.email,
-    customerName: user.displayName ?? undefined,
+    // Deliberately no customerName: Polar prefills the CARDHOLDER NAME from it,
+    // and the name on the card is often not the workspace display name. A wrong
+    // prefill invites an AVS/name mismatch, so let the payer type it themselves.
     // Links the Polar customer back to our user; surfaced again on webhooks.
     externalCustomerId: user.id,
     ...(discountId ? { discountId } : {}),
@@ -171,27 +173,6 @@ export async function createCheckout(
   return { id: checkout.id, url: checkout.url };
 }
 
-// ── Clics engine: initial-purchase checkout (card capture + first charge) ─────
-// The Clics billing engine charges via off-session Orders, but a customer needs
-// a SAVED card first. Polar only saves cards for RECURRING products (a one-time
-// checkout does NOT persist the card). So the initial purchase goes through a
-// hosted checkout against a recurring, pay-what-you-want product
-// (POLAR_PRODUCT_TEAMS_MONTHLY/YEARLY) with a custom `amount` = the first period's
-// total: Polar charges that AND saves the card, so later off-session Orders
-// (renewals, seat-adds via POLAR_CHARGE_PRODUCT_ID) can reuse it. The webhook/
-// confirm reads the metadata below to provision the workspace subscription.
-//
-// NOTE: a recurring checkout creates a Polar subscription that would auto-renew.
-// The Clics engine drives renewals itself (to net credit), so Polar's auto-renew
-// must be cancelled after provisioning (cancelAtPeriodEnd) — added as a follow-up
-// once card-capture is validated in sandbox, so it can't confound that test.
-export function chargeProductId(): string | null {
-  const v = isSandbox()
-    ? process.env.POLAR_SANDBOX_CHARGE_PRODUCT_ID || process.env.POLAR_CHARGE_PRODUCT_ID
-    : process.env.POLAR_CHARGE_PRODUCT_ID;
-  return (v || "").trim() || null;
-}
-
 // Recurring (subscription) Teams product id for the interval — used for the INITIAL
 // checkout so Polar saves the card. Env-aware: sandbox prefers POLAR_SANDBOX_* and
 // falls back to the unprefixed keys.
@@ -202,80 +183,6 @@ export function teamsRecurringProductId(interval: string): string | null {
   const yearly =
     (sb ? process.env.POLAR_SANDBOX_PRODUCT_TEAMS_YEARLY : "") || process.env.POLAR_PRODUCT_TEAMS_YEARLY || "";
   return ((interval === "year" ? yearly : monthly) || "").trim() || null;
-}
-
-export async function createSubscriptionCheckout(opts: {
-  user: CheckoutUser;
-  companyId: string;
-  planKey: string;
-  interval: string; // "month" | "year"
-  seats: number;
-  amountCents: number;
-}): Promise<{ id: string; url: string }> {
-  const polar = getClient();
-  // Recurring PWYW product → Polar SAVES the card (a one-time product does not), and
-  // the custom `amount` lets us charge the exact first-period total (seats × per-seat
-  // computed by the engine). The engine then owns all later billing off-session.
-  const product = teamsRecurringProductId(opts.interval);
-  if (!product) {
-    throw new Error(
-      "No recurring Teams product configured (POLAR_SANDBOX_PRODUCT_TEAMS_MONTHLY/YEARLY or POLAR_PRODUCT_TEAMS_*)",
-    );
-  }
-
-  const successUrl = `${returnBase()}?status=success&checkout_id={CHECKOUT_ID}`;
-  const checkout = await polar.checkouts.create({
-    products: [product],
-    amount: opts.amountCents, // exact first-period total for the PWYW recurring product
-    // Off-session charges later need a billing address (tax) + saved card; collect
-    // the address at the initial checkout so it's on file for future Orders.
-    requireBillingAddress: true,
-    successUrl,
-    customerEmail: opts.user.email,
-    customerName: opts.user.displayName ?? undefined,
-    externalCustomerId: opts.user.id,
-    metadata: {
-      kind: "new_subscription",
-      companyId: opts.companyId,
-      userId: opts.user.id,
-      planKey: opts.planKey,
-      interval: opts.interval,
-      seats: opts.seats,
-    },
-  });
-
-  return { id: checkout.id, url: checkout.url };
-}
-
-// ── Checkout reconciliation (provision on return) ────────────────────────────
-// Fetch a completed checkout so the caller can provision the subscription on
-// return from Polar — a fallback for when the order.paid webhook hasn't arrived
-// (e.g. local dev with no public webhook URL). Idempotent at the caller.
-export interface ConfirmedCheckout {
-  status: string;
-  paid: boolean;
-  userId: string | null; // our external customer id (= user.id)
-  customerId: string | null; // Polar customer id
-  metadata: Record<string, any>;
-  amountCents: number | null;
-}
-
-export async function getCheckout(checkoutId: string): Promise<ConfirmedCheckout | null> {
-  const polar = getClient();
-  const co: any = await polar.checkouts.get({ id: checkoutId });
-  if (!co) return null;
-  const status = String(co.status ?? "");
-  return {
-    status,
-    // Per Polar: ONLY "succeeded" means the payment was captured. "confirmed" just
-    // means the customer clicked Pay (not a success signal); "processing"/"open"/
-    // "expired"/"failed" are not paid either. Don't provision on anything else.
-    paid: status === "succeeded",
-    userId: co.externalCustomerId ?? co.customerExternalId ?? co.metadata?.userId ?? null,
-    customerId: co.customerId ?? co.customer?.id ?? null,
-    metadata: co.metadata ?? {},
-    amountCents: co.totalAmount ?? co.amount ?? null,
-  };
 }
 
 // ── Customer portal ──────────────────────────────────────────────────────────
@@ -509,15 +416,36 @@ async function customerSessionToken(userId: string): Promise<string> {
   return token;
 }
 
+/** Thrown when Polar declines the deletion for a reason worth showing the user. */
+export class PaymentMethodDeleteError extends Error {
+  constructor(message: string, readonly code: string) {
+    super(message);
+  }
+}
+
 export async function deletePaymentMethod(userId: string, paymentMethodId: string): Promise<void> {
   const token = await customerSessionToken(userId);
   const res = await fetch(
     `${polarApiBase()}/v1/customer-portal/customers/me/payment-methods/${encodeURIComponent(paymentMethodId)}`,
     { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
   );
-  if (!res.ok && res.status !== 204) {
-    throw new Error(`Polar refused to delete the payment method (HTTP ${res.status})`);
+  if (res.ok || res.status === 204) return;
+
+  // Polar refuses to remove the last card behind an active subscription — that
+  // would leave the subscription with no way to charge. It's a rule worth telling
+  // the customer about, not a failure to hide behind a generic error.
+  const body: any = await res.json().catch(() => ({}));
+  const code = String(body?.error ?? `HTTP_${res.status}`);
+  if (code === "PaymentMethodInUseByActiveSubscription") {
+    throw new PaymentMethodDeleteError(
+      "This card is paying for your active subscription. Add another card first, or cancel the subscription, then remove it.",
+      code,
+    );
   }
+  throw new PaymentMethodDeleteError(
+    String(body?.detail ?? `Polar refused to delete the payment method (HTTP ${res.status})`),
+    code,
+  );
 }
 
 // ── DB read ──────────────────────────────────────────────────────────────────
