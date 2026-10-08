@@ -4,9 +4,19 @@ import nodemailer from 'nodemailer';
 // auth fails with `Missing credentials for "PLAIN"`. Rather than crash every
 // route that sends mail, fall back to a console "transport" that logs the email
 // (and any verification/reset/invite link found in the body) to the terminal.
-const hasEmailCredentials = Boolean(
-  process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD
-);
+// Prefer a generic SMTP server when configured; otherwise fall back to Gmail,
+// otherwise log to the console (local dev).
+const hasSmtp = Boolean(process.env.SMTP_HOST && process.env.SMTP_PORT);
+const hasGmail = Boolean(process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD);
+const hasEmailCredentials = hasSmtp || hasGmail;
+
+// Address outgoing mail is sent "from".
+const MAIL_FROM =
+  process.env.MAIL_FROM ||
+  process.env.SMTP_FROM ||
+  (process.env.SMTP_USER ? `"ClicsHQ" <${process.env.SMTP_USER}>` : '') ||
+  (process.env.GMAIL_USER ? `"ClicsHQ" <${process.env.GMAIL_USER}>` : '') ||
+  '"ClicsHQ" <no-reply@clicshq.com>';
 
 function logEmailToConsole(mailOptions: any) {
   const links = String(mailOptions?.html ?? '').match(/https?:\/\/[^\s"'<)]+/g) || [];
@@ -22,7 +32,20 @@ function logEmailToConsole(mailOptions: any) {
 }
 
 // Configure Gmail transporter (real) or a console fallback (dev, no credentials)
-const transporter = hasEmailCredentials
+const transporter = hasSmtp
+  ? nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT) || 587,
+      // true for 465 (SSL), false for 587/25 (STARTTLS) — override with SMTP_SECURE=true/false
+      secure:
+        process.env.SMTP_SECURE === 'true' ||
+        Number(process.env.SMTP_PORT) === 465,
+      auth:
+        process.env.SMTP_USER && process.env.SMTP_PASS
+          ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+          : undefined,
+    })
+  : hasGmail
   ? nodemailer.createTransport({
       service: 'gmail',
       auth: {
@@ -32,9 +55,13 @@ const transporter = hasEmailCredentials
     })
   : ({ sendMail: async (mailOptions: any) => logEmailToConsole(mailOptions) } as any);
 
-if (!hasEmailCredentials) {
+if (hasSmtp) {
+  console.log(`📧 SMTP email enabled via ${process.env.SMTP_HOST}:${process.env.SMTP_PORT}`);
+} else if (hasGmail) {
+  console.log('📧 Gmail email enabled');
+} else {
   console.warn(
-    '⚠️  No GMAIL_USER / GMAIL_APP_PASSWORD set — emails will be logged to the console instead of sent. ' +
+    '⚠️  No SMTP_* or GMAIL_* credentials set — emails will be logged to the console instead of sent. ' +
       'Verification/reset/invite links will appear in this terminal.'
   );
 }
@@ -51,7 +78,7 @@ export async function send2FACodeEmail(
   const actionText = action === "enable" ? "enable" : "disable";
 
   const mailOptions = {
-    from: `"ClicsHQ" <${process.env.GMAIL_USER}>`,
+    from: MAIL_FROM,
     to: email,
     subject: `Your ClicsHQ verification code`,
     html: `
@@ -112,7 +139,7 @@ export async function sendVerificationEmail(
   const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${token}`;
 
   const mailOptions = {
-    from: `"ClicsHQ" <${process.env.GMAIL_USER}>`,
+    from: MAIL_FROM,
     to: email,
     subject: 'Verify your ClicsHQ account',
     html: `
@@ -169,7 +196,7 @@ export async function sendPasswordResetEmail(email: string, resetToken: string, 
   const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
 
   const mailOptions = {
-    from: `"${process.env.APP_NAME || 'Your App'}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
+    from: MAIL_FROM,
     to: email,
     subject: 'Reset Your Password',
     html: `
@@ -305,7 +332,7 @@ export async function sendSpaceInviteEmail(opts: SpaceInviteEmailOptions) {
   `;
 
   const mailOptions = {
-    from: `"ClicsHQ" <${process.env.GMAIL_USER}>`,
+    from: MAIL_FROM,
     to: toEmail,
     subject,
     html,
@@ -330,7 +357,7 @@ export async function sendMentionNotificationEmail(
   taskUrl: string
 ) {
   const mailOptions = {
-    from: `"ClicsHQ" <${process.env.GMAIL_USER}>`,
+    from: MAIL_FROM,
     to: toEmail,
     subject: `${mentionedBy} mentioned you in a comment on "${taskName}"`,
     html: `
