@@ -125,7 +125,7 @@ export async function runDocChat(
 
   try {
     const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+      model: "openai/gpt-oss-120b",
       temperature: 0.3,
       max_tokens: 1024,
       messages: [
@@ -180,7 +180,7 @@ export async function runDocGeneration(
 
   try {
     const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+      model: "openai/gpt-oss-120b",
       temperature: 0.6,
       max_tokens: 2048,
       response_format: { type: "json_object" },
@@ -216,6 +216,71 @@ export async function runDocGeneration(
   }
 }
 
+/* ───────────────────────── Doc edit (Write with Clics AI) ───────────────────────── */
+
+const DOC_EDIT_SYSTEM = `
+You edit an existing document according to the user's instruction.
+
+Return a JSON object with EXACTLY one field:
+- "content": the FULL edited document as clean HTML using ONLY these tags: <h1>, <h2>, <h3>, <p>, <ul>, <ol>, <li>, <strong>, <em>, <blockquote>.
+
+RULES:
+- Apply the user's instruction to the CURRENT document. Keep everything the instruction does not ask to change.
+- Return the COMPLETE edited document, not just the changed part.
+- Do NOT include <html>, <head>, <body>, markdown, or code fences.
+- Match the user's language.
+`.trim();
+
+export async function runDocEdit(
+  instruction: string,
+  currentHtml: string,
+): Promise<{ success: true; content: string } | { success: false; error: string }> {
+  const groq = getGroq();
+  if (!groq) {
+    return { success: false, error: "AI not configured (GROQ_API_KEY missing)" };
+  }
+  const trimmed = (instruction ?? "").trim();
+  if (!trimmed) {
+    return { success: false, error: "Instruction is empty" };
+  }
+  const doc = (currentHtml ?? "").slice(0, 16000);
+
+  try {
+    const response = await groq.chat.completions.create({
+      model: "openai/gpt-oss-120b",
+      temperature: 0.4,
+      max_tokens: 3072,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: DOC_EDIT_SYSTEM },
+        {
+          role: "user",
+          content: `INSTRUCTION:\n${trimmed}\n\nCURRENT DOCUMENT (HTML):\n${doc || "<p></p>"}`,
+        },
+      ],
+    });
+
+    const raw = response.choices[0]?.message?.content?.trim() ?? "";
+    if (!raw) return { success: false, error: "Empty response from AI" };
+
+    let parsed: { content?: string };
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = { content: `<p>${raw.replace(/</g, "&lt;")}</p>` };
+    }
+    const content = (parsed.content || "").toString().trim();
+    if (!content) return { success: false, error: "AI returned no content" };
+    return { success: true, content };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[DocEdit] error:", msg);
+    if (msg.includes("401")) return { success: false, error: "Invalid GROQ_API_KEY" };
+    if (msg.includes("429")) return { success: false, error: "Rate limit — wait a moment and try again" };
+    return { success: false, error: msg };
+  }
+}
+
 export async function runWritingAssist(
   action: WritingAction,
   text: string,
@@ -239,7 +304,7 @@ export async function runWritingAssist(
 
   try {
     const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+      model: "openai/gpt-oss-120b",
       temperature: cfg.temperature,
       max_tokens: 1024,
       messages: [

@@ -10,6 +10,7 @@ import {
   runWritingAssist,
   runDocChat,
   runDocGeneration,
+  runDocEdit,
   type WritingAction,
   type ChatMessage,
 } from "../services/writingAssistService";
@@ -76,6 +77,20 @@ router.post("/generate-doc", requireAuth, async (req: Request, res: Response) =>
   }
 
   const result = await runDocGeneration(prompt);
+  if (!result.success) {
+    return res.status(500).json(result);
+  }
+  return res.json(result);
+});
+
+router.post("/edit-doc", requireAuth, async (req: Request, res: Response) => {
+  const { instruction, content } = req.body ?? {};
+
+  if (typeof instruction !== "string" || !instruction.trim()) {
+    return res.status(400).json({ success: false, error: "instruction (string) is required" });
+  }
+
+  const result = await runDocEdit(instruction, typeof content === "string" ? content : "");
   if (!result.success) {
     return res.status(500).json(result);
   }
