@@ -147,6 +147,75 @@ export async function runDocChat(
   }
 }
 
+/* ───────────────────────── Doc generation (Create with AI) ───────────────────────── */
+
+const DOC_GEN_SYSTEM = `
+You generate a complete, well-structured document from the user's prompt.
+
+Return a JSON object with EXACTLY two fields:
+- "title": a short, clear document title in plain text (no markdown, no quotes).
+- "content": the document body as clean HTML using ONLY these tags: <h1>, <h2>, <h3>, <p>, <ul>, <ol>, <li>, <strong>, <em>, <blockquote>.
+
+RULES:
+- Write helpful, realistic, well-organised content that fully matches the user's request.
+- Do NOT repeat the title as the first heading inside "content".
+- Do NOT include <html>, <head>, <body>, markdown, or code fences.
+- Match the user's language.
+`.trim();
+
+export async function runDocGeneration(
+  prompt: string,
+): Promise<{ success: true; title: string; content: string } | { success: false; error: string }> {
+  const groq = getGroq();
+  if (!groq) {
+    return { success: false, error: "AI not configured (GROQ_API_KEY missing)" };
+  }
+  const trimmed = (prompt ?? "").trim();
+  if (!trimmed) {
+    return { success: false, error: "Prompt is empty" };
+  }
+  if (trimmed.length > 4000) {
+    return { success: false, error: "Prompt too long (max 4000 chars)" };
+  }
+
+  try {
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.6,
+      max_tokens: 2048,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: DOC_GEN_SYSTEM },
+        { role: "user", content: trimmed },
+      ],
+    });
+
+    const raw = response.choices[0]?.message?.content?.trim() ?? "";
+    if (!raw) return { success: false, error: "Empty response from AI" };
+
+    let parsed: { title?: string; content?: string };
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Fallback: treat the whole reply as the body if JSON parsing fails.
+      parsed = { title: "Untitled", content: `<p>${raw.replace(/</g, "&lt;")}</p>` };
+    }
+
+    const title = (parsed.title || "Untitled").toString().trim().slice(0, 200);
+    const content = (parsed.content || "").toString().trim();
+    if (!content) return { success: false, error: "AI returned no content" };
+
+    return { success: true, title, content };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[DocGeneration] error:", msg);
+    if (msg.includes("401")) return { success: false, error: "Invalid GROQ_API_KEY" };
+    if (msg.includes("429")) return { success: false, error: "Rate limit — wait a moment and try again" };
+    if (msg.toLowerCase().includes("timeout")) return { success: false, error: "AI service timed out" };
+    return { success: false, error: msg };
+  }
+}
+
 export async function runWritingAssist(
   action: WritingAction,
   text: string,

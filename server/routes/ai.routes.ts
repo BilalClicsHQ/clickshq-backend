@@ -9,6 +9,7 @@ import { requireAuth } from "../auth";
 import {
   runWritingAssist,
   runDocChat,
+  runDocGeneration,
   type WritingAction,
   type ChatMessage,
 } from "../services/writingAssistService";
@@ -61,6 +62,20 @@ router.post("/chat", requireAuth, async (req: Request, res: Response) => {
     docTitle: typeof docTitle === "string" ? docTitle : undefined,
     docContent: typeof docContent === "string" ? docContent : undefined,
   });
+  if (!result.success) {
+    return res.status(500).json(result);
+  }
+  return res.json(result);
+});
+
+router.post("/generate-doc", requireAuth, async (req: Request, res: Response) => {
+  const { prompt } = req.body ?? {};
+
+  if (typeof prompt !== "string" || !prompt.trim()) {
+    return res.status(400).json({ success: false, error: "prompt (string) is required" });
+  }
+
+  const result = await runDocGeneration(prompt);
   if (!result.success) {
     return res.status(500).json(result);
   }
