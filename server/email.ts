@@ -66,6 +66,106 @@ if (hasSmtp) {
   );
 }
 
+/**
+ * Builds a polished, email-client-safe HTML email.
+ * Uses table layout + fully inline styles (Gmail/Outlook strip <style>/classes),
+ * and a bulletproof, clearly clickable button.
+ */
+function buildEmailTemplate(opts: {
+  heading: string;
+  greeting: string;
+  intro?: string;
+  body: string;
+  buttonLabel: string;
+  buttonUrl: string;
+  note?: string;
+  disclaimer?: string;
+}): string {
+  const {
+    heading,
+    greeting,
+    intro,
+    body,
+    buttonLabel,
+    buttonUrl,
+    note,
+    disclaimer,
+  } = opts;
+
+  const brand = '#6d5ae6';
+  const year = new Date().getFullYear();
+
+  return `
+  <!DOCTYPE html>
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <meta name="color-scheme" content="light only" />
+      <title>${heading}</title>
+    </head>
+    <body style="margin:0; padding:0; background-color:#f1f1f4; -webkit-text-size-adjust:100%;">
+      <!-- preheader (hidden) -->
+      <div style="display:none; max-height:0; overflow:hidden; opacity:0;">${body}</div>
+
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f1f1f4; padding:24px 12px;">
+        <tr>
+          <td align="center">
+            <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px; width:100%; background-color:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 1px 4px rgba(16,24,40,0.06); font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+
+              <!-- Header -->
+              <tr>
+                <td style="background-color:${brand}; background-image:linear-gradient(135deg,#6d5ae6 0%,#8b5cf6 100%); padding:36px 32px; text-align:center;">
+                  <div style="font-size:20px; font-weight:700; color:#ffffff; letter-spacing:0.3px; margin-bottom:6px;">ClicsHQ</div>
+                  <div style="font-size:24px; font-weight:700; color:#ffffff;">${heading}</div>
+                </td>
+              </tr>
+
+              <!-- Body -->
+              <tr>
+                <td style="padding:32px;">
+                  <p style="margin:0 0 16px; font-size:18px; font-weight:600; color:#101828;">${greeting}</p>
+                  ${intro ? `<p style="margin:0 0 12px; font-size:15px; line-height:1.6; color:#475467;">${intro}</p>` : ''}
+                  <p style="margin:0 0 28px; font-size:15px; line-height:1.6; color:#475467;">${body}</p>
+
+                  <!-- Button -->
+                  <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto 28px;">
+                    <tr>
+                      <td align="center" style="border-radius:10px; background-color:${brand};">
+                        <a href="${buttonUrl}" target="_blank"
+                           style="display:inline-block; padding:14px 36px; font-size:15px; font-weight:600; color:#ffffff; text-decoration:none; border-radius:10px; background-color:${brand};">
+                          ${buttonLabel}
+                        </a>
+                      </td>
+                    </tr>
+                  </table>
+
+                  <p style="margin:0 0 8px; font-size:13px; color:#667085;">Or copy and paste this link into your browser:</p>
+                  <p style="margin:0 0 24px; word-break:break-all;">
+                    <a href="${buttonUrl}" target="_blank" style="font-size:13px; color:${brand}; text-decoration:underline;">${buttonUrl}</a>
+                  </p>
+
+                  ${note ? `<p style="margin:0 0 12px; font-size:14px; font-weight:600; color:#101828;">${note}</p>` : ''}
+                  ${disclaimer ? `<p style="margin:0; font-size:13px; line-height:1.6; color:#98a2b3;">${disclaimer}</p>` : ''}
+                </td>
+              </tr>
+
+              <!-- Footer -->
+              <tr>
+                <td style="padding:20px 32px; background-color:#fafafa; border-top:1px solid #eef0f3; text-align:center;">
+                  <p style="margin:0; font-size:12px; color:#98a2b3;">© ${year} ClicsHQ. All rights reserved.</p>
+                </td>
+              </tr>
+
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+  </html>
+  `;
+}
+
 // Billing emails (payment failed / downgraded) are sent by Polar, which owns
 // renewals and dunning — this app no longer sends any.
 
@@ -142,45 +242,16 @@ export async function sendVerificationEmail(
     from: MAIL_FROM,
     to: email,
     subject: 'Verify your ClicsHQ account',
-    html: `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-            .button { display: inline-block; padding: 15px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 20px 0; }
-            .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>Welcome to ClicsHQ! 🎉</h1>
-            </div>
-            <div class="content">
-              <h2>Hi ${displayName},</h2>
-              <p>Thanks for signing up! We're excited to have you on board.</p>
-              <p>Please verify your email address by clicking the button below:</p>
-              <div style="text-align: center;">
-                <a href="${verificationUrl}" class="button">Verify Email Address</a>
-              </div>
-              <p>Or copy and paste this link into your browser:</p>
-              <p style="background: #fff; padding: 10px; border-radius: 5px; word-break: break-all;">
-                ${verificationUrl}
-              </p>
-              <p><strong>This link will expire in 24 hours.</strong></p>
-              <p>If you didn't create an account with ClicsHQ, please ignore this email.</p>
-            </div>
-            <div class="footer">
-              <p>© ${new Date().getFullYear()} ClicsHQ. All rights reserved.</p>
-            </div>
-          </div>
-        </body>
-      </html>
-    `,
+    html: buildEmailTemplate({
+      heading: 'Welcome to ClicsHQ! 🎉',
+      greeting: `Hi ${displayName},`,
+      intro: "Thanks for signing up! We're excited to have you on board.",
+      body: 'Please verify your email address by clicking the button below.',
+      buttonLabel: 'Verify Email Address',
+      buttonUrl: verificationUrl,
+      note: 'This link will expire in 24 hours.',
+      disclaimer: "If you didn't create an account with ClicsHQ, please ignore this email.",
+    }),
   };
 
   try {
@@ -199,51 +270,17 @@ export async function sendPasswordResetEmail(email: string, resetToken: string, 
     from: MAIL_FROM,
     to: email,
     subject: 'Reset Your Password',
-    html: `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background-color: #000; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
-            .content { background-color: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
-            .button { display: inline-block; padding: 12px 30px; background-color: #c1ff72; color: #000; text-decoration: none; border-radius: 8px; font-weight: bold; margin: 20px 0; }
-            .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
-            .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; margin: 20px 0; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>Password Reset Request</h1>
-            </div>
-            <div class="content">
-              <p>Hi ${displayName},</p>
-              <p>We received a request to reset your password. Click the button below to create a new password:</p>
-              <div style="text-align: center;">
-                <a href="${resetUrl}" class="button">Reset Password</a>
-              </div>
-              <p>Or copy and paste this link into your browser:</p>
-              <p style="word-break: break-all; color: #666;">${resetUrl}</p>
-              <div class="warning">
-                <strong>⚠️ Security Notice:</strong>
-                <p style="margin: 5px 0 0 0;">This link will expire in 1 hour. If you didn't request a password reset, please ignore this email and your password will remain unchanged.</p>
-              </div>
-              <p>For security reasons, we recommend that you:</p>
-              <ul>
-                <li>Choose a strong, unique password</li>
-                <li>Never share your password with anyone</li>
-              </ul>
-            </div>
-            <div class="footer">
-              <p>If you have any questions or concerns, please contact our support team.</p>
-              <p>&copy; ${new Date().getFullYear()} ${process.env.APP_NAME || 'Your App'}. All rights reserved.</p>
-            </div>
-          </div>
-        </body>
-      </html>
-    `,
+    html: buildEmailTemplate({
+      heading: 'Password Reset Request',
+      greeting: `Hi ${displayName},`,
+      intro: 'We received a request to reset your password.',
+      body: 'Click the button below to create a new password.',
+      buttonLabel: 'Reset Password',
+      buttonUrl: resetUrl,
+      note: 'This link will expire in 1 hour.',
+      disclaimer:
+        "If you didn't request a password reset, please ignore this email and your password will remain unchanged.",
+    }),
   };
 
   try {
