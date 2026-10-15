@@ -35,7 +35,7 @@ export async function duplicateDocHandler(req: Request, res: Response) {
     const baseTitle = `${cleanBaseTitle} (Copy)`;
     const uniqueTitle = await storage.generateUniqueDocumentName(baseTitle);
 
-    // Create duplicate document
+    // Create duplicate document (standalone — opens as a new doc after duplicating).
     const duplicateDoc = await storage.createDocument({
       title: uniqueTitle,
       content: originalDoc.content || "",
