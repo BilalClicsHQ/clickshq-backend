@@ -11,7 +11,7 @@ import { db } from "./db";
 import { eq, desc, sql, and } from "drizzle-orm";
 import { sendPasswordResetEmail, sendVerificationEmail, send2FACodeEmail, sendMentionNotificationEmail } from "./email";
 import crypto from 'crypto';
-import { sendSpaceInviteEmail } from "./email";
+import { sendSpaceInviteEmail, sendMemberInviteEmail } from "./email";
 import bcrypt from "bcrypt";
 import * as otplib from 'otplib';
 import QRCode from "qrcode";
@@ -894,6 +894,106 @@ async function registerAllRoutes(app: Express): Promise<void> {
     }
   });
 
+  // ── Workspace Members (Teams page → Member tab) ──────────────────────────────
+  // Backed by the invitations table. Maps each invitation to the member shape
+  // the UI needs: { id, name, email, role: 'member'|'admin', status: 'Active'|'Pending' }.
+  const toMemberRole = (storedRole: string) => (storedRole === 'admin' ? 'admin' : 'member');
+  const toStoredRole = (uiRole: string) => (uiRole === 'admin' ? 'admin' : 'user');
+
+  app.get('/api/members', requireAdminAccess, async (req, res) => {
+    try {
+      const invitations = await storage.getInvitations();
+      const members = await Promise.all(
+        invitations.map(async (inv) => {
+          let name = inv.email.split('@')[0];
+          try {
+            const user = await storage.getUserByEmail(inv.email);
+            if (user?.displayName) name = user.displayName;
+          } catch {
+            /* ignore lookup failure */
+          }
+          return {
+            id: inv.id,
+            name,
+            email: inv.email,
+            role: toMemberRole(inv.role),
+            status: inv.status === 'accepted' ? 'Active' : 'Pending',
+          };
+        })
+      );
+      res.json(members);
+    } catch (error) {
+      console.error('Error fetching members:', error);
+      res.status(500).json({ message: 'Failed to fetch members' });
+    }
+  });
+
+  app.post('/api/members', requireAdminAccess, async (req, res) => {
+    try {
+      const currentUser = req.user as any;
+      const { members } = req.body as { members?: Array<{ email: string; role?: string }> };
+
+      if (!Array.isArray(members) || members.length === 0) {
+        return res.status(400).json({ message: 'At least one member is required' });
+      }
+
+      const created = [];
+      for (const m of members) {
+        const email = (m.email || '').trim().toLowerCase();
+        if (!email) continue;
+
+        // Skip if this email was already invited.
+        const existing = await storage.getInvitationByEmail(email);
+        if (existing) continue;
+
+        const invitation = await storage.createInvitation({
+          email,
+          role: toStoredRole(m.role || 'member') as any,
+          invitedBy: currentUser.id,
+          status: 'pending',
+        });
+
+        // Send the invite email (best effort — won't block the invite if it fails).
+        await sendMemberInviteEmail({
+          toEmail: email,
+          inviterName: currentUser.displayName || currentUser.email || 'A teammate',
+          role: m.role || 'member',
+        });
+
+        let name = email.split('@')[0];
+        try {
+          const user = await storage.getUserByEmail(email);
+          if (user?.displayName) name = user.displayName;
+        } catch {
+          /* ignore */
+        }
+
+        created.push({
+          id: invitation.id,
+          name,
+          email,
+          role: toMemberRole(invitation.role),
+          status: invitation.status === 'accepted' ? 'Active' : 'Pending',
+        });
+      }
+
+      res.status(201).json({ members: created });
+    } catch (error) {
+      console.error('Error creating members:', error);
+      res.status(500).json({ message: 'Failed to add members' });
+    }
+  });
+
+  app.delete('/api/members/:id', requireAdminAccess, async (req, res) => {
+    try {
+      await storage.deleteInvitation(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error deleting member:', error);
+      res.status(500).json({ message: 'Failed to delete member' });
+    }
+  });
+
   // Teams Routes
   app.get('/api/teams', async (req, res) => {
     try {
@@ -948,6 +1048,17 @@ async function registerAllRoutes(app: Express): Promise<void> {
     } catch (error) {
       console.error('Error creating team:', error);
       res.status(500).json({ message: 'Failed to create team' });
+    }
+  });
+
+  app.delete('/api/teams/:id', requireAdminAccess, async (req, res) => {
+    try {
+      const ok = await storage.deleteTeam(req.params.id);
+      if (!ok) return res.status(404).json({ message: 'Team not found' });
+      res.status(204).send();
+    } catch (error) {
+      console.error('Error deleting team:', error);
+      res.status(500).json({ message: 'Failed to delete team' });
     }
   });
 

@@ -292,6 +292,39 @@ export async function sendPasswordResetEmail(email: string, resetToken: string, 
   }
 }
 
+export async function sendMemberInviteEmail(opts: {
+  toEmail: string;
+  inviterName: string;
+  role: string;
+}) {
+  const { toEmail, inviterName, role } = opts;
+  const signupUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/signup?email=${encodeURIComponent(toEmail)}`;
+  const roleLabel = role === 'admin' ? 'an Admin' : 'a Member';
+
+  const mailOptions = {
+    from: MAIL_FROM,
+    to: toEmail,
+    subject: `${inviterName} invited you to join ClicsHQ`,
+    html: buildEmailTemplate({
+      heading: "You're invited to ClicsHQ 🎉",
+      greeting: 'Hi there,',
+      intro: `${inviterName} has invited you to join their workspace on ClicsHQ as ${roleLabel}.`,
+      body: 'Click the button below to create your account and get started.',
+      buttonLabel: 'Join ClicsHQ',
+      buttonUrl: signupUrl,
+      disclaimer: "If you weren't expecting this invitation, you can safely ignore this email.",
+    }),
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`Member invite email sent to ${toEmail}`);
+  } catch (error) {
+    console.error('Error sending member invite email:', error);
+    // Don't throw — email failure shouldn't block the invite from being saved.
+  }
+}
+
 interface SpaceInviteEmailOptions {
   toEmail: string;
   toName: string;

@@ -230,6 +230,7 @@
     createInvitation(invitation: InsertInvitation): Promise<Invitation>;
     getInvitations(): Promise<Invitation[]>;
     getInvitationByEmail(email: string): Promise<Invitation | undefined>;
+    deleteInvitation(id: string): Promise<void>;
 
     // Teams
     getAllTeams(): Promise<Team[]>;
@@ -1074,6 +1075,10 @@
     async getInvitationByEmail(email: string): Promise<Invitation | undefined> {
       const [invitation] = await db.select().from(invitations).where(eq(invitations.email, email));
       return invitation || undefined;
+    }
+
+    async deleteInvitation(id: string): Promise<void> {
+      await db.delete(invitations).where(eq(invitations.id, id));
     }
 
     // Teams methods
