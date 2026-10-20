@@ -230,6 +230,8 @@
     createInvitation(invitation: InsertInvitation): Promise<Invitation>;
     getInvitations(): Promise<Invitation[]>;
     getInvitationByEmail(email: string): Promise<Invitation | undefined>;
+    getInvitationByToken(token: string): Promise<Invitation | undefined>;
+    updateInvitation(id: string, updates: Partial<InsertInvitation>): Promise<Invitation | undefined>;
     deleteInvitation(id: string): Promise<void>;
 
     // Teams
@@ -1074,6 +1076,16 @@
 
     async getInvitationByEmail(email: string): Promise<Invitation | undefined> {
       const [invitation] = await db.select().from(invitations).where(eq(invitations.email, email));
+      return invitation || undefined;
+    }
+
+    async getInvitationByToken(token: string): Promise<Invitation | undefined> {
+      const [invitation] = await db.select().from(invitations).where(eq(invitations.token, token));
+      return invitation || undefined;
+    }
+
+    async updateInvitation(id: string, updates: Partial<InsertInvitation>): Promise<Invitation | undefined> {
+      const [invitation] = await db.update(invitations).set(updates).where(eq(invitations.id, id)).returning();
       return invitation || undefined;
     }
 

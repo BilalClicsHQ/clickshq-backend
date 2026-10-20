@@ -26,7 +26,24 @@ export async function uploadFileToS3(
 ): Promise<S3UploadResult> {
   const bucketName = process.env.AWS_S3_BUCKET;
   if (!bucketName) {
-    throw new Error("AWS_S3_BUCKET environment variable is not defined");
+    // Local/dev fallback: no S3 configured → store the file inline as a base64
+    // data URL so uploads still work without AWS credentials. Capped at 10 MB to
+    // avoid bloating the DB; configure AWS_S3_BUCKET for larger/production files.
+    const MAX_INLINE_BYTES = 10 * 1024 * 1024;
+    if (file.size > MAX_INLINE_BYTES) {
+      throw new Error(
+        "File is too large for local storage (max 10 MB). Configure AWS_S3_BUCKET to upload larger files."
+      );
+    }
+    const uuid = crypto.randomUUID();
+    const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, "_");
+    const dataUrl = `data:${file.mimetype};base64,${file.buffer.toString("base64")}`;
+    return {
+      key: `local/tasks/${taskId}/${uuid}-${sanitizedName}`,
+      bucket: "local",
+      region: "local",
+      publicUrl: dataUrl,
+    };
   }
 
   const region = process.env.AWS_REGION || "us-east-1";

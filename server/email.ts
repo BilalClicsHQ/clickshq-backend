@@ -296,9 +296,10 @@ export async function sendMemberInviteEmail(opts: {
   toEmail: string;
   inviterName: string;
   role: string;
+  inviteLink: string;
+  alreadyHasAccount?: boolean;
 }) {
-  const { toEmail, inviterName, role } = opts;
-  const signupUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/signup?email=${encodeURIComponent(toEmail)}`;
+  const { toEmail, inviterName, role, inviteLink, alreadyHasAccount } = opts;
   const roleLabel = role === 'admin' ? 'an Admin' : 'a Member';
 
   const mailOptions = {
@@ -309,9 +310,12 @@ export async function sendMemberInviteEmail(opts: {
       heading: "You're invited to ClicsHQ 🎉",
       greeting: 'Hi there,',
       intro: `${inviterName} has invited you to join their workspace on ClicsHQ as ${roleLabel}.`,
-      body: 'Click the button below to create your account and get started.',
-      buttonLabel: 'Join ClicsHQ',
-      buttonUrl: signupUrl,
+      body: alreadyHasAccount
+        ? 'You already have a ClicsHQ account — just log in and you\'ll have access.'
+        : 'Click the button below to set up your account and get started.',
+      buttonLabel: alreadyHasAccount ? 'Log in to ClicsHQ' : 'Accept invitation',
+      buttonUrl: inviteLink,
+      note: alreadyHasAccount ? undefined : 'This invitation link expires in 7 days.',
       disclaimer: "If you weren't expecting this invitation, you can safely ignore this email.",
     }),
   };

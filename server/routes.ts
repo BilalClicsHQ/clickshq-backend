@@ -3,12 +3,12 @@ import { createServer, type Server } from "http";
 import passport from "passport";
 import { storage } from "./storage";
 import { requireAuth, hashPassword, validatePassword, validateEmail, generateVerificationToken } from "./auth";
-import { insertProjectSchema, updateProjectSchema, insertTeamMemberSchema, insertGoalSchema, updateGoalSchema, insertSprintSchema, updateSprintSchema, updateUserRoleSchema, projectStatusUpdates, projectBudgets, projectCosts, workspaceProjects, projectActivities, projectAttachments, insertProjectBudgetSchema, insertProjectCostSchema, users, projects, tasks, spaceInvitations, spaces, spaceFavourites, spaceRecentActivity, taskComments, taskFileAttachments, taskActivities } from "@shared/schema";
+import { insertProjectSchema, updateProjectSchema, insertTeamMemberSchema, insertGoalSchema, updateGoalSchema, insertSprintSchema, updateSprintSchema, updateUserRoleSchema, projectStatusUpdates, projectBudgets, projectCosts, workspaceProjects, projectActivities, projectAttachments, insertProjectBudgetSchema, insertProjectCostSchema, users, projects, tasks, spaceInvitations, spaces, spaceFavourites, spaceRecentActivity, taskComments, taskFileAttachments, taskActivities, spaceStatuses, notes } from "@shared/schema";
 import { ObjectStorageService, ObjectNotFoundError } from "./objectStorage";
 import { z } from "zod";
 import { isValidContextId } from "@shared/context-helpers";
 import { db } from "./db";
-import { eq, desc, sql, and } from "drizzle-orm";
+import { eq, desc, sql, and, or, inArray } from "drizzle-orm";
 import { sendPasswordResetEmail, sendVerificationEmail, send2FACodeEmail, sendMentionNotificationEmail } from "./email";
 import crypto from 'crypto';
 import { sendSpaceInviteEmail, sendMemberInviteEmail } from "./email";
@@ -125,18 +125,35 @@ async function syncTaskAttachments(taskId: string, attachments: any[], userId: s
       }
 
       if (dbRecord.taskId.startsWith("temp")) {
-        const oldKey = dbRecord.externalId;
+        const oldKey = dbRecord.externalId || "";
+        // Local/dev (no S3): the file is stored inline (base64 data URL) — there's
+        // nothing to copy in S3, so just re-parent the DB record to the real task.
+        const noS3 = !process.env.AWS_S3_BUCKET;
+        const isLocalFile = oldKey.startsWith("local/") || (dbRecord.externalUrl || "").startsWith("data:");
+        if (noS3 || isLocalFile) {
+          await db
+            .update(taskFileAttachments)
+            .set({ taskId })
+            .where(eq(taskFileAttachments.id, dbRecord.id));
+          await db
+            .update(taskActivities)
+            .set({ taskId })
+            .where(eq(taskActivities.taskId, dbRecord.taskId));
+          savedUrls.push(dbRecord.externalUrl || "");
+          continue;
+        }
+
         const keyParts = oldKey.split("/");
         const filenameWithUuid = keyParts[keyParts.length - 1];
         const newKey = `tasks/${taskId}/${filenameWithUuid}`;
-        
+
         const oldUrl = dbRecord.externalUrl || "";
         const bucketName = process.env.AWS_S3_BUCKET || "";
         const region = process.env.AWS_REGION || "us-east-1";
         const newUrl = `https://${bucketName}.s3.${region}.amazonaws.com/${newKey}`;
 
         console.log(`[Sync S3] Re-parenting S3 file: ${oldKey} -> ${newKey}`);
-        
+
         try {
           await copyS3Object(oldKey, newKey);
           await deleteS3Object(oldKey);
@@ -937,43 +954,90 @@ async function registerAllRoutes(app: Express): Promise<void> {
         return res.status(400).json({ message: 'At least one member is required' });
       }
 
+      const frontendUrl = process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:5173';
+      const inviterName = currentUser.displayName || currentUser.email || 'A teammate';
+      const companyId = currentUser.companyId ?? null;
+
       const created = [];
       for (const m of members) {
         const email = (m.email || '').trim().toLowerCase();
         if (!email) continue;
 
-        // Skip if this email was already invited.
         const existing = await storage.getInvitationByEmail(email);
-        if (existing) continue;
+        // Already an accepted member — leave as-is.
+        if (existing && existing.status === 'accepted') {
+          created.push({ id: existing.id, name: email.split('@')[0], email, role: toMemberRole(existing.role), status: 'Active' });
+          continue;
+        }
 
-        const invitation = await storage.createInvitation({
+        const storedRole = toStoredRole(m.role || 'member') as any;
+        const token = crypto.randomBytes(32).toString('hex');
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+        const existingUser = await storage.getUserByEmail(email);
+        let invitedUserId: string;
+        let status: string;
+        let inviteLink: string;
+        let name = email.split('@')[0];
+
+        if (existingUser) {
+          // The person already has an account → add them to this workspace with
+          // the chosen role; they just log in. No token setup needed.
+          await storage.updateUser(existingUser.id, {
+            companyId: existingUser.companyId ?? companyId,
+            role: storedRole,
+          } as any);
+          invitedUserId = existingUser.id;
+          status = 'accepted';
+          inviteLink = `${frontendUrl}/login`;
+          if (existingUser.displayName) name = existingUser.displayName;
+        } else {
+          // New person → create a soft-signup placeholder (joined to the inviter's
+          // company with the chosen role) and send a tokenized accept link.
+          const softUser = await storage.createUser({
+            email,
+            displayName: email.split('@')[0],
+            password: null,
+            authProvider: 'local',
+            isEmailVerified: false,
+            isSoftSignup: true,
+            companyId,
+            role: storedRole,
+            hasCompletedOnboarding: true,
+          } as any);
+          invitedUserId = softUser.id;
+          status = 'pending';
+          inviteLink = `${frontendUrl}/accept-invite?token=${token}&type=member`;
+        }
+
+        const invitationValues = {
           email,
-          role: toStoredRole(m.role || 'member') as any,
+          role: storedRole,
           invitedBy: currentUser.id,
-          status: 'pending',
-        });
+          status,
+          token,
+          invitedUserId,
+          expiresAt,
+        };
+        const invitation = existing
+          ? await storage.updateInvitation(existing.id, invitationValues as any)
+          : await storage.createInvitation(invitationValues as any);
 
         // Send the invite email (best effort — won't block the invite if it fails).
         await sendMemberInviteEmail({
           toEmail: email,
-          inviterName: currentUser.displayName || currentUser.email || 'A teammate',
+          inviterName,
           role: m.role || 'member',
+          inviteLink,
+          alreadyHasAccount: !!existingUser,
         });
 
-        let name = email.split('@')[0];
-        try {
-          const user = await storage.getUserByEmail(email);
-          if (user?.displayName) name = user.displayName;
-        } catch {
-          /* ignore */
-        }
-
         created.push({
-          id: invitation.id,
+          id: invitation!.id,
           name,
           email,
-          role: toMemberRole(invitation.role),
-          status: invitation.status === 'accepted' ? 'Active' : 'Pending',
+          role: toMemberRole(storedRole),
+          status: status === 'accepted' ? 'Active' : 'Pending',
         });
       }
 
@@ -991,6 +1055,231 @@ async function registerAllRoutes(app: Express): Promise<void> {
     } catch (error) {
       console.error('Error deleting member:', error);
       res.status(500).json({ message: 'Failed to delete member' });
+    }
+  });
+
+  // ── Member invite accept flow (tokenized, no auth) ───────────────────────────
+  // Verify an invite token → returns the email + inviter's workspace name.
+  app.get('/api/members/invite/verify', async (req, res) => {
+    try {
+      const token = typeof req.query.token === 'string' ? req.query.token : '';
+      if (!token) return res.status(400).json({ status: 'invalid', message: 'Token is required' });
+
+      const invitation = await storage.getInvitationByToken(token);
+      if (!invitation) return res.status(404).json({ status: 'invalid', message: 'Invitation not found' });
+      if (invitation.status === 'accepted') return res.json({ status: 'already_accepted' });
+      if (invitation.expiresAt && new Date(invitation.expiresAt) < new Date()) {
+        return res.status(410).json({ status: 'expired' });
+      }
+
+      const inviter = await storage.getUser(invitation.invitedBy);
+      return res.json({
+        status: 'pending',
+        email: invitation.email,
+        role: toMemberRole(invitation.role),
+        inviterName: inviter?.displayName || 'A teammate',
+      });
+    } catch (error) {
+      console.error('Error verifying invite:', error);
+      return res.status(500).json({ status: 'error', message: 'Failed to verify invitation' });
+    }
+  });
+
+  // Accept an invite → set up the account, join the workspace, and log in.
+  app.post('/api/members/invite/accept', async (req, res) => {
+    try {
+      const { token, firstName, lastName, password, phone } = req.body ?? {};
+      if (!token || !firstName || !lastName || !password) {
+        return res.status(400).json({ message: 'Token, first name, last name and password are required' });
+      }
+
+      const passwordValidation = await validatePassword(password);
+      if (!passwordValidation.isValid) {
+        return res.status(400).json({ message: passwordValidation.message || 'Invalid password' });
+      }
+
+      const invitation = await storage.getInvitationByToken(token);
+      if (!invitation) return res.status(404).json({ message: 'Invitation not found' });
+      if (invitation.status === 'accepted') return res.status(409).json({ message: 'Invitation already accepted' });
+      if (invitation.expiresAt && new Date(invitation.expiresAt) < new Date()) {
+        return res.status(410).json({ message: 'Invitation has expired' });
+      }
+      if (!invitation.invitedUserId) {
+        return res.status(400).json({ message: 'Invitation is corrupt — please ask for a new invite' });
+      }
+
+      const hashedPassword = await hashPassword(password);
+      const inviter = await storage.getUser(invitation.invitedBy);
+      const companyId = inviter?.companyId ?? null;
+
+      // Complete the soft-signup placeholder user.
+      const user = await storage.updateUser(invitation.invitedUserId, {
+        firstName,
+        lastName,
+        displayName: `${firstName} ${lastName}`.trim(),
+        password: hashedPassword,
+        phone: phone || null,
+        role: invitation.role,
+        companyId,
+        isEmailVerified: true,
+        isSoftSignup: false,
+        authProvider: 'local',
+        hasCompletedOnboarding: true,
+      } as any);
+
+      await storage.updateInvitation(invitation.id, { status: 'accepted' } as any);
+
+      if (!user) return res.status(500).json({ message: 'Failed to complete account' });
+
+      // Auto-login the new member.
+      req.login(user as any, (err) => {
+        if (err) {
+          console.error('Auto-login after invite accept failed:', err);
+          return res.json({ success: true, loggedIn: false, email: invitation.email });
+        }
+        return res.json({
+          success: true,
+          loggedIn: true,
+          user: { id: (user as any).id, email: (user as any).email, displayName: (user as any).displayName, role: (user as any).role },
+        });
+      });
+    } catch (error) {
+      console.error('Error accepting invite:', error);
+      return res.status(500).json({ message: 'Failed to accept invitation' });
+    }
+  });
+
+  // ── Home: My Tasks (current user's tasks across all spaces) ──────────────────
+  app.get('/api/my-tasks', requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const rows = await db
+        .select({
+          id: tasks.id,
+          name: tasks.name,
+          spaceId: tasks.spaceId,
+          spaceName: spaces.name,
+          statusId: tasks.statusId,
+          statusName: spaceStatuses.name,
+          statusColor: spaceStatuses.colorCode,
+          priority: tasks.priority,
+          ownerId: tasks.ownerId,
+          assigneeIds: tasks.assigneeIds,
+          dueDate: tasks.dueDate,
+          createdAt: tasks.createdAt,
+          updatedAt: tasks.updatedAt,
+        })
+        .from(tasks)
+        .leftJoin(spaceStatuses, eq(tasks.statusId, spaceStatuses.id))
+        .leftJoin(spaces, eq(tasks.spaceId, spaces.id))
+        .where(or(eq(tasks.ownerId, userId), sql`${userId} = ANY(${tasks.assigneeIds})`))
+        .orderBy(desc(tasks.updatedAt));
+      res.json(rows);
+    } catch (error) {
+      console.error('Error fetching my tasks:', error);
+      res.status(500).json({ message: 'Failed to fetch tasks' });
+    }
+  });
+
+  // ── Home: My Activity (recent activity across the user's spaces) ─────────────
+  app.get('/api/my-activity', requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const userSpaces = await db
+        .select({ id: spaces.id })
+        .from(spaces)
+        .where(or(eq(spaces.ownerId, userId), sql`${userId} = ANY(${spaces.memberIds})`));
+      const spaceIds = userSpaces.map((s) => s.id);
+      if (spaceIds.length === 0) return res.json([]);
+
+      const rows = await db
+        .select({
+          id: projectActivities.id,
+          projectId: projectActivities.projectId,
+          activityType: projectActivities.activityType,
+          entityName: projectActivities.entityName,
+          oldValue: projectActivities.oldValue,
+          newValue: projectActivities.newValue,
+          createdAt: projectActivities.createdAt,
+          actorId: users.id,
+          actorName: users.displayName,
+          actorAvatar: users.profilePicture,
+        })
+        .from(projectActivities)
+        .leftJoin(users, eq(projectActivities.userId, users.id))
+        .where(inArray(projectActivities.projectId, spaceIds))
+        .orderBy(desc(projectActivities.createdAt))
+        .limit(30);
+      res.json(rows);
+    } catch (error) {
+      console.error('Error fetching my activity:', error);
+      res.status(500).json({ message: 'Failed to fetch activity' });
+    }
+  });
+
+  // ── Home: Notes (Scratch Pad) — per-user CRUD ────────────────────────────────
+  app.get('/api/notes', requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const rows = await db
+        .select()
+        .from(notes)
+        .where(eq(notes.userId, userId))
+        .orderBy(desc(notes.updatedAt));
+      res.json(rows);
+    } catch (error) {
+      console.error('Error fetching notes:', error);
+      res.status(500).json({ message: 'Failed to fetch notes' });
+    }
+  });
+
+  app.post('/api/notes', requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const { title, content } = req.body as { title?: string; content?: string };
+      const [note] = await db
+        .insert(notes)
+        .values({
+          userId,
+          title: (title || '').trim() || 'Untitled',
+          content: content || '',
+        })
+        .returning();
+      res.status(201).json(note);
+    } catch (error) {
+      console.error('Error creating note:', error);
+      res.status(500).json({ message: 'Failed to create note' });
+    }
+  });
+
+  app.patch('/api/notes/:id', requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const { title, content } = req.body as { title?: string; content?: string };
+      const updates: any = { updatedAt: new Date() };
+      if (title !== undefined) updates.title = title.trim() || 'Untitled';
+      if (content !== undefined) updates.content = content;
+      const [note] = await db
+        .update(notes)
+        .set(updates)
+        .where(and(eq(notes.id, req.params.id), eq(notes.userId, userId)))
+        .returning();
+      if (!note) return res.status(404).json({ message: 'Note not found' });
+      res.json(note);
+    } catch (error) {
+      console.error('Error updating note:', error);
+      res.status(500).json({ message: 'Failed to update note' });
+    }
+  });
+
+  app.delete('/api/notes/:id', requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      await db.delete(notes).where(and(eq(notes.id, req.params.id), eq(notes.userId, userId)));
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error deleting note:', error);
+      res.status(500).json({ message: 'Failed to delete note' });
     }
   });
 

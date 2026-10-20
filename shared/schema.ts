@@ -179,6 +179,8 @@ export const invitations = pgTable("invitations", {
   role: userRoleEnum("role").notNull().default("user"),
   invitedBy: varchar("invited_by").notNull(), // User ID of admin who sent invite
   status: text("status").default("pending"), // 'pending', 'accepted', 'expired'
+  token: text("token"), // accept-invite link token
+  invitedUserId: varchar("invited_user_id"), // soft-signup placeholder user id
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
   expiresAt: timestamp("expires_at"), // Optional expiry date
 });
@@ -378,6 +380,39 @@ export const taskComments = pgTable("task_comments", {
 
 export type TaskComment = typeof taskComments.$inferSelect;
 export type InsertTaskComment = typeof taskComments.$inferInsert;
+
+// ─── Notes (Home Scratch Pad) ───────────────────────────────────────────────
+export const notes = pgTable("notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(),
+  title: text("title").notNull().default("Untitled"),
+  content: text("content").default(""),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`),
+});
+export type Note = typeof notes.$inferSelect;
+export type InsertNote = typeof notes.$inferInsert;
+
+// ─── Clics AI chat (conversations + messages) ────────────────────────────────
+export const aiConversations = pgTable("ai_conversations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(),
+  title: text("title").notNull().default("New chat"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`),
+});
+export type AiConversation = typeof aiConversations.$inferSelect;
+export type InsertAiConversation = typeof aiConversations.$inferInsert;
+
+export const aiMessages = pgTable("ai_messages", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  conversationId: varchar("conversation_id").notNull(),
+  role: text("role").notNull(), // 'user' | 'assistant'
+  content: text("content").notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+});
+export type AiMessage = typeof aiMessages.$inferSelect;
+export type InsertAiMessage = typeof aiMessages.$inferInsert;
 
 
 export const workspaceProjects = pgTable("workspace_projects", {
