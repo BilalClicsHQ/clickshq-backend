@@ -1,4 +1,16 @@
 import nodemailer from 'nodemailer';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+// ── ClicsHQ logo (white, for the black email header) ─────────────────────────
+// Embedded via CID so it renders reliably everywhere (Gmail/Outlook block SVG
+// and inline data: URIs). nodemailer reads the file and inlines it per email.
+const __dirnameEsm = dirname(fileURLToPath(import.meta.url));
+const LOGO_PATH = join(__dirnameEsm, 'assets', 'clicshq-logo-white.png');
+const LOGO_CID = 'clicshqlogo';
+const logoAttachment = { filename: 'clicshq-logo.png', path: LOGO_PATH, cid: LOGO_CID };
+// Reusable <img> wordmark for the dark header.
+const LOGO_IMG = `<img src="cid:${LOGO_CID}" width="150" alt="ClicsHQ" style="display:block; margin:0 auto; height:auto; border:0;" />`;
 
 // When no Gmail credentials are configured (e.g. local development), real SMTP
 // auth fails with `Missing credentials for "PLAIN"`. Rather than crash every
@@ -92,7 +104,7 @@ function buildEmailTemplate(opts: {
     disclaimer,
   } = opts;
 
-  const brand = '#6d5ae6';
+  const brand = '#000000';
   const year = new Date().getFullYear();
 
   return `
@@ -115,8 +127,8 @@ function buildEmailTemplate(opts: {
 
               <!-- Header -->
               <tr>
-                <td style="background-color:${brand}; background-image:linear-gradient(135deg,#6d5ae6 0%,#8b5cf6 100%); padding:36px 32px; text-align:center;">
-                  <div style="font-size:20px; font-weight:700; color:#ffffff; letter-spacing:0.3px; margin-bottom:6px;">ClicsHQ</div>
+                <td style="background-color:#000000; padding:36px 32px; text-align:center;">
+                  <div style="margin-bottom:14px;">${LOGO_IMG}</div>
                   <div style="font-size:24px; font-weight:700; color:#ffffff;">${heading}</div>
                 </td>
               </tr>
@@ -179,6 +191,7 @@ export async function send2FACodeEmail(
 
   const mailOptions = {
     from: MAIL_FROM,
+    attachments: [logoAttachment],
     to: email,
     subject: `Your ClicsHQ verification code`,
     html: `
@@ -199,7 +212,7 @@ export async function send2FACodeEmail(
         <body>
           <div class="container">
             <div class="header">
-              <h1>ClicsHQ</h1>
+              ${LOGO_IMG}
             </div>
             <div class="content">
               <h2>Hi ${displayName},</h2>
@@ -240,6 +253,7 @@ export async function sendVerificationEmail(
 
   const mailOptions = {
     from: MAIL_FROM,
+    attachments: [logoAttachment],
     to: email,
     subject: 'Verify your ClicsHQ account',
     html: buildEmailTemplate({
@@ -268,6 +282,7 @@ export async function sendPasswordResetEmail(email: string, resetToken: string, 
 
   const mailOptions = {
     from: MAIL_FROM,
+    attachments: [logoAttachment],
     to: email,
     subject: 'Reset Your Password',
     html: buildEmailTemplate({
@@ -304,6 +319,7 @@ export async function sendMemberInviteEmail(opts: {
 
   const mailOptions = {
     from: MAIL_FROM,
+    attachments: [logoAttachment],
     to: toEmail,
     subject: `${inviterName} invited you to join ClicsHQ`,
     html: buildEmailTemplate({
@@ -372,7 +388,7 @@ export async function sendSpaceInviteEmail(opts: SpaceInviteEmailOptions) {
         <style>
           body { font-family: Arial, sans-serif; line-height: 1.6; color: #111; }
           .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-          .header { background: #000; color: #c1ff72; padding: 28px 30px; text-align: center; border-radius: 10px 10px 0 0; }
+          .header { background: #000; color: #fff; padding: 28px 30px; text-align: center; border-radius: 10px 10px 0 0; }
           .header h1 { margin: 0; font-size: 24px; }
           .content { background: #fafafa; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb; }
           .space-badge { display:inline-block; background:#f3f4f6; border:1px solid #e5e7eb; border-radius:8px; padding:10px 18px; font-size:16px; font-weight:600; color:#111; margin:16px 0; }
@@ -382,7 +398,7 @@ export async function sendSpaceInviteEmail(opts: SpaceInviteEmailOptions) {
       <body>
         <div class="container">
           <div class="header">
-            <h1>ClicsHQ</h1>
+            ${LOGO_IMG}
           </div>
           <div class="content">
             <h2>Hi ${toName},</h2>
@@ -407,6 +423,7 @@ export async function sendSpaceInviteEmail(opts: SpaceInviteEmailOptions) {
 
   const mailOptions = {
     from: MAIL_FROM,
+    attachments: [logoAttachment],
     to: toEmail,
     subject,
     html,
@@ -432,6 +449,7 @@ export async function sendMentionNotificationEmail(
 ) {
   const mailOptions = {
     from: MAIL_FROM,
+    attachments: [logoAttachment],
     to: toEmail,
     subject: `${mentionedBy} mentioned you in a comment on "${taskName}"`,
     html: `
@@ -441,10 +459,10 @@ export async function sendMentionNotificationEmail(
           <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #1f2937; }
             .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: #000; color: #c1ff72; padding: 28px 30px; text-align: center; border-radius: 12px 12px 0 0; }
+            .header { background: #000; color: #fff; padding: 28px 30px; text-align: center; border-radius: 12px 12px 0 0; }
             .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
             .content { background: #ffffff; padding: 30px; border-radius: 0 0 12px 12px; border: 1px solid #e5e7eb; border-top: none; }
-            .comment-box { background: #f9fafb; border-left: 4px solid #c1ff72; padding: 16px; margin: 20px 0; border-radius: 8px; }
+            .comment-box { background: #f9fafb; border-left: 4px solid #000000; padding: 16px; margin: 20px 0; border-radius: 8px; }
             .comment-box p { margin: 0; color: #374151; font-size: 14px; }
             .task-link { display: inline-block; padding: 12px 24px; background: #000; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 500; margin: 20px 0; }
             .task-link:hover { background: #1f2937; }
@@ -455,7 +473,7 @@ export async function sendMentionNotificationEmail(
         <body>
           <div class="container">
             <div class="header">
-              <h1>ClicsHQ</h1>
+              ${LOGO_IMG}
             </div>
             <div class="content">
               <h2 style="margin-top: 0; font-size: 18px;">Hi ${toName},</h2>

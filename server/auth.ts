@@ -113,7 +113,8 @@ export function setupAuth() {
     }
   }));
 
-  // ========== MICROSOFT STRATEGY ==========
+  // ========== MICROSOFT STRATEGY (only registered when configured) ==========
+  if (process.env.MICROSOFT_CLIENT_ID && process.env.MICROSOFT_CLIENT_SECRET) {
   passport.use(new MicrosoftStrategy({
     clientID: process.env.MICROSOFT_CLIENT_ID!,
     clientSecret: process.env.MICROSOFT_CLIENT_SECRET!,
@@ -170,6 +171,9 @@ export function setupAuth() {
       return done(error as Error, undefined);
     }
   }));
+  } else {
+    console.log("ℹ️  Microsoft OAuth not configured — skipping Microsoft login strategy.");
+  }
 
   // Serialize user for session
   passport.serializeUser((user: any, done) => {

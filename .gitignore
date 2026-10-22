@@ -12,4 +12,3 @@ config.bat
 
 
 # Local secrets — never commit
-.env
