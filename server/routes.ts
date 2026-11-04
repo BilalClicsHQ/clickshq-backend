@@ -289,32 +289,56 @@ async function registerAllRoutes(app: Express): Promise<void> {
       // Check if user already exists
       const existingUser = await storage.getUserByEmail(email);
       if (existingUser) {
-        return res.status(400).json({ message: "An account with this email already exists." });
+        // Allow re-registration if account is unverified and token has expired (stuck from previous failed attempt)
+        const isStuck =
+          !existingUser.isEmailVerified &&
+          existingUser.emailVerificationExpiry &&
+          new Date(existingUser.emailVerificationExpiry) < new Date();
+        if (!isStuck) {
+          return res.status(400).json({ message: "An account with this email already exists." });
+        }
+        // Stuck unverified account — update it with fresh credentials below
       }
 
       // Generate verification token
       const { token, expiry } = generateVerificationToken();
 
-      // Hash password and create user
+      // Hash password and create (or refresh) user
       const hashedPassword = await hashPassword(password);
       const displayName = `${firstName} ${lastName}`;
 
-      const user = await storage.createUser({
-        email,
-        password: hashedPassword,
-        displayName,
-        firstName,
-        lastName,
-        phone,
-        role: "admin",
-        authProvider: "local",
-        isEmailVerified: false,
-        emailVerificationToken: token,
-        emailVerificationExpiry: expiry,
-      });
+      let user: any;
+      if (existingUser) {
+        // Refresh the stuck unverified account with new credentials
+        user = await storage.updateUser(existingUser.id, {
+          password: hashedPassword,
+          displayName,
+          firstName,
+          lastName,
+          phone,
+          emailVerificationToken: token,
+          emailVerificationExpiry: expiry,
+        });
+      } else {
+        user = await storage.createUser({
+          email,
+          password: hashedPassword,
+          displayName,
+          firstName,
+          lastName,
+          phone,
+          role: "admin",
+          authProvider: "local",
+          isEmailVerified: false,
+          emailVerificationToken: token,
+          emailVerificationExpiry: expiry,
+        });
+      }
 
-      // Send verification email
-      await sendVerificationEmail(email, token, displayName);
+      // Send verification email (non-blocking — email failure should not block signup)
+      sendVerificationEmail(email, token, displayName).catch((emailErr) => {
+        console.error("Verification email failed (non-fatal):", emailErr);
+      });
 
       res.status(201).json({
         message: "Account created successfully!",
