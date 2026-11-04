@@ -20,6 +20,7 @@ import workflowRoutes from "./routes/workflows.routes";
 import { evaluateWorkflows } from "./services/workflowEngine";
 import { registerDocsRoutes } from "./controllers/docs";
 import aiRoutes from "./routes/ai.routes";
+import aiAgentRoutes from "./routes/ai-agents.routes";
 import { registerSlackRoutes } from "./controllers/slack/routes";
 import integrationAuthRoutes from "./routes/integration-auth.routes";
 import calendarRoutes from "./routes/calendar.routes";
@@ -4544,8 +4545,10 @@ app.patch("/api/spaces/:spaceId/tasks/reorder", requireAuth, async (req, res) =>
   app.use('/api/workflows', workflowRoutes);
   // Docs (advanced) — registers /api/docs/*, /api/public/docs/:token, /api/users/search
   registerDocsRoutes(app);
-  // Doc editor AI (writing assist + chat) — needs GROQ_API_KEY
+  // Doc editor AI (writing assist + chat) — needs OPENAI_API_KEY
   app.use('/api/ai', aiRoutes);
+  // AI Agents (Project Planner, Task Creator, ...) — needs OPENAI_API_KEY
+  app.use('/api/ai-agents', aiAgentRoutes);
   // Integrations
   registerSlackRoutes(app);
   app.use('/api/auth', integrationAuthRoutes);

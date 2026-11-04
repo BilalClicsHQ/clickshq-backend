@@ -20,6 +20,7 @@ import { storage } from "../storage";
 import { db } from "../db";
 import { users, spaces, spaceStatuses } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
+import { createChatCompletion, isOpenAIConfigured } from "../services/openaiService";
 
 const router = Router();
 
@@ -280,8 +281,8 @@ router.post(
 
 // ── AI Suggestion: analyze message for actionable content ──────────────────
 /**
- * Uses the existing Groq agent infrastructure to analyze a message and decide
- * if a task should be created. Returns { isActionable, suggestedTaskName,
+ * Uses the shared OpenAI client to analyze a message and decide if a task
+ * should be created. Returns { isActionable, suggestedTaskName,
  * suggestedPriority, reasoning }.
  */
 router.post(
@@ -294,9 +295,7 @@ router.post(
         return res.status(400).json({ success: false, error: { code: "MISSING_MESSAGE" } });
       }
 
-      // Use Groq directly with a small prompt
-      const groqKey = process.env.GROQ_API_KEY;
-      if (!groqKey) {
+      if (!isOpenAIConfigured()) {
         return res.json({
           success: true,
           data: { isActionable: false, reasoning: "AI not configured" },
@@ -315,30 +314,21 @@ Respond ONLY in this exact JSON format (no other text):
   "reasoning": "1-sentence explanation"
 }`;
 
-      const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${groqKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
+      let content: string;
+      try {
+        content = await createChatCompletion({
           messages: [{ role: "user", content: prompt }],
           temperature: 0.2,
-          max_tokens: 200,
-          response_format: { type: "json_object" },
-        }),
-      });
-
-      if (!resp.ok) {
+          maxTokens: 200,
+          json: true,
+        });
+      } catch {
         return res.json({
           success: true,
           data: { isActionable: false, reasoning: "AI service unavailable" },
         });
       }
 
-      const data: any = await resp.json();
-      const content = data.choices?.[0]?.message?.content ?? "{}";
       let parsed;
       try {
         parsed = JSON.parse(content);
