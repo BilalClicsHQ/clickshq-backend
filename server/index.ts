@@ -163,6 +163,18 @@ app.use((req, res, next) => {
     }, 24 * 60 * 60 * 1000);
     log("Slack Daily Digest cron scheduled (every 24h)");
 
+    // AI Follow-up Agent: daily reminders for overdue / near-deadline / inactive tasks
+    setInterval(async () => {
+      try {
+        const { runFollowUpAgent } = await import("./services/aiAgentService");
+        const reminders = await runFollowUpAgent();
+        log(`Follow-up Agent sent ${reminders.length} reminder(s)`);
+      } catch (err: any) {
+        console.error("[Follow-up Agent cron] failed:", err?.message ?? err);
+      }
+    }, 24 * 60 * 60 * 1000);
+    log("Follow-up Agent cron scheduled (every 24h)");
+
     // No billing cron: Polar owns renewals and dunning. Subscription state reaches
     // us through the /api/webhooks/polar receiver, not a scheduler.
   });

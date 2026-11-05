@@ -31,7 +31,6 @@
     "express-session": "^1.18.1",
     "file-type": "^21.3.4",
     "googleapis": "^171.4.0",
-    "groq-sdk": "^1.2.1",
     "i18n-iso-countries": "^7.14.0",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.0",

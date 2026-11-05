@@ -98,7 +98,8 @@ export type FeatureKey =
   | "example_premium_feature" // PLACEHOLDER demo used by the example gate
   | "advanced_automations" // PLACEHOLDER — not implemented yet
   | "unlimited_docs" // PLACEHOLDER — not implemented yet
-  | "priority_support"; // PLACEHOLDER — not implemented yet
+  | "priority_support" // PLACEHOLDER — not implemented yet
+  | "ai_insights"; // Space AI insights tab + space chat
 
 export interface FeatureDefinition {
   key: FeatureKey;
@@ -138,6 +139,13 @@ export const FEATURES: Record<FeatureKey, FeatureDefinition> = {
     description: "Faster, dedicated support response times.",
     minPlan: "teams",
     placeholder: true,
+  },
+  ai_insights: {
+    key: "ai_insights",
+    name: "AI Insights",
+    description: "AI-generated insights and chat for a space, based on its progress and workload.",
+    // Open to every plan for now; set to "teams" to make it a paid feature.
+    minPlan: "free",
   },
 };
 

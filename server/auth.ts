@@ -29,8 +29,8 @@ export function setupAuth() {
         });
       }
 
-      // Check if email is verified (only for local auth)
-      if (!user.isEmailVerified) {
+      // Check if email is verified (only for local auth) — TEMP: skipped in development for testing
+      if (!user.isEmailVerified && process.env.NODE_ENV !== 'development') {
         return done(null, false, { message: "Please verify your email before logging in." });
       }
       

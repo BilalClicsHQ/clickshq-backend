@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, boolean, pgEnum, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, boolean, pgEnum, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -397,6 +397,7 @@ export type InsertNote = typeof notes.$inferInsert;
 export const aiConversations = pgTable("ai_conversations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull(),
+  spaceId: varchar("space_id"), // set for a space's AI-insights chat; null for Clics AI chat
   title: text("title").notNull().default("New chat"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`),
@@ -1764,3 +1765,45 @@ export const insertSubscriptionSchema = createInsertSchema(subscriptions).omit({
 export type Subscription = typeof subscriptions.$inferSelect;
 export type InsertSubscription = z.infer<typeof insertSubscriptionSchema>;
 
+
+// ── Integration requests (Integrations page → "Request Integration") ──────────
+export const integrationRequests = pgTable("integration_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(),
+  companyId: varchar("company_id"),
+  productName: text("product_name").notNull(),
+  useCase: text("use_case"),
+  priority: text("priority").notNull(), // High | Medium | Low
+  notifyEmail: text("notify_email"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export type IntegrationRequest = typeof integrationRequests.$inferSelect;
+
+// ── Space AI insights (space page → "AI insights" tab) ──────────────────────────
+// One cached insight per space + card; regenerated on demand.
+export const spaceAiInsights = pgTable("space_ai_insights", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  spaceId: varchar("space_id").notNull(),
+  cardKey: text("card_key").notNull(),
+  content: jsonb("content"), // { sections: [{ heading, text }] }
+  customPrompt: text("custom_prompt"), // extra instruction set from the card's edit popover
+  generatedAt: timestamp("generated_at"),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (t) => ({
+  spaceCardIdx: uniqueIndex("space_ai_insights_space_card_idx").on(t.spaceId, t.cardKey),
+}));
+
+export type SpaceAiInsight = typeof spaceAiInsights.$inferSelect;
+
+// Thumbs up/down per user on an insight card.
+export const aiInsightFeedback = pgTable("ai_insight_feedback", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  spaceId: varchar("space_id").notNull(),
+  cardKey: text("card_key").notNull(),
+  userId: varchar("user_id").notNull(),
+  value: text("value").notNull(), // "up" | "down"
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (t) => ({
+  spaceCardUserIdx: uniqueIndex("ai_insight_feedback_space_card_user_idx").on(t.spaceId, t.cardKey, t.userId),
+}));

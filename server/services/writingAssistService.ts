@@ -1,27 +1,15 @@
 /**
  * Writing-assist — single-shot AI rewrites for selected text in a doc.
  *
- * Uses the same Groq client as agentService (same llama-3.3-70b-versatile model)
- * but with a tightly-scoped prompt per action so the model returns ONLY the
- * rewritten text — no preamble, no explanation, no markdown unless the action
- * specifically asks for it.
+ * Uses the shared OpenAI client with a tightly-scoped prompt per action so the
+ * model returns ONLY the rewritten text — no preamble, no explanation, no
+ * markdown unless the action specifically asks for it.
  *
  *   POST /api/ai/writing-assist  { action, text } → { reply }
  */
-import Groq from "groq-sdk";
+import { createChatCompletion, describeOpenAIError, isOpenAIConfigured } from "./openaiService";
 
-let groqClient: Groq | null = null;
-
-function getGroq(): Groq | null {
-  if (groqClient) return groqClient;
-  const apiKey = process.env.GROQ_API_KEY?.trim();
-  if (!apiKey) {
-    console.warn("[WritingAssist] GROQ_API_KEY is not set");
-    return null;
-  }
-  groqClient = new Groq({ apiKey });
-  return groqClient;
-}
+const NOT_CONFIGURED = "AI not configured (OPENAI_API_KEY missing)";
 
 export type WritingAction =
   | "improve"
@@ -97,9 +85,8 @@ export async function runDocChat(
   history: ChatMessage[] = [],
   context: { docTitle?: string; docContent?: string } = {},
 ): Promise<{ success: true; reply: string } | { success: false; error: string }> {
-  const groq = getGroq();
-  if (!groq) {
-    return { success: false, error: "AI not configured (GROQ_API_KEY missing)" };
+  if (!isOpenAIConfigured()) {
+    return { success: false, error: NOT_CONFIGURED };
   }
   const trimmed = (userMessage ?? "").trim();
   if (!trimmed) {
@@ -124,26 +111,20 @@ export async function runDocChat(
   );
 
   try {
-    const response = await groq.chat.completions.create({
-      model: "openai/gpt-oss-120b",
+    const reply = await createChatCompletion({
       temperature: 0.3,
-      max_tokens: 1024,
+      maxTokens: 1024,
       messages: [
         { role: "system", content: systemPrompt },
         ...recentHistory.map((m) => ({ role: m.role, content: m.content })),
         { role: "user", content: trimmed },
       ],
     });
-    const reply = response.choices[0]?.message?.content?.trim() ?? "";
     if (!reply) return { success: false, error: "Empty response from AI" };
     return { success: true, reply };
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[DocChat] error:", msg);
-    if (msg.includes("401")) return { success: false, error: "Invalid GROQ_API_KEY" };
-    if (msg.includes("429")) return { success: false, error: "Rate limit — wait a moment and try again" };
-    if (msg.toLowerCase().includes("timeout")) return { success: false, error: "AI service timed out" };
-    return { success: false, error: msg };
+    console.error("[DocChat] error:", err instanceof Error ? err.message : err);
+    return { success: false, error: describeOpenAIError(err) };
   }
 }
 
@@ -166,9 +147,8 @@ RULES:
 export async function runDocGeneration(
   prompt: string,
 ): Promise<{ success: true; title: string; content: string } | { success: false; error: string }> {
-  const groq = getGroq();
-  if (!groq) {
-    return { success: false, error: "AI not configured (GROQ_API_KEY missing)" };
+  if (!isOpenAIConfigured()) {
+    return { success: false, error: NOT_CONFIGURED };
   }
   const trimmed = (prompt ?? "").trim();
   if (!trimmed) {
@@ -179,18 +159,15 @@ export async function runDocGeneration(
   }
 
   try {
-    const response = await groq.chat.completions.create({
-      model: "openai/gpt-oss-120b",
+    const raw = await createChatCompletion({
       temperature: 0.6,
-      max_tokens: 2048,
-      response_format: { type: "json_object" },
+      maxTokens: 2048,
+      json: true,
       messages: [
         { role: "system", content: DOC_GEN_SYSTEM },
         { role: "user", content: trimmed },
       ],
     });
-
-    const raw = response.choices[0]?.message?.content?.trim() ?? "";
     if (!raw) return { success: false, error: "Empty response from AI" };
 
     let parsed: { title?: string; content?: string };
@@ -207,12 +184,8 @@ export async function runDocGeneration(
 
     return { success: true, title, content };
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[DocGeneration] error:", msg);
-    if (msg.includes("401")) return { success: false, error: "Invalid GROQ_API_KEY" };
-    if (msg.includes("429")) return { success: false, error: "Rate limit — wait a moment and try again" };
-    if (msg.toLowerCase().includes("timeout")) return { success: false, error: "AI service timed out" };
-    return { success: false, error: msg };
+    console.error("[DocGeneration] error:", err instanceof Error ? err.message : err);
+    return { success: false, error: describeOpenAIError(err) };
   }
 }
 
@@ -235,9 +208,8 @@ export async function runDocEdit(
   instruction: string,
   currentHtml: string,
 ): Promise<{ success: true; content: string } | { success: false; error: string }> {
-  const groq = getGroq();
-  if (!groq) {
-    return { success: false, error: "AI not configured (GROQ_API_KEY missing)" };
+  if (!isOpenAIConfigured()) {
+    return { success: false, error: NOT_CONFIGURED };
   }
   const trimmed = (instruction ?? "").trim();
   if (!trimmed) {
@@ -246,11 +218,10 @@ export async function runDocEdit(
   const doc = (currentHtml ?? "").slice(0, 16000);
 
   try {
-    const response = await groq.chat.completions.create({
-      model: "openai/gpt-oss-120b",
+    const raw = await createChatCompletion({
       temperature: 0.4,
-      max_tokens: 3072,
-      response_format: { type: "json_object" },
+      maxTokens: 3072,
+      json: true,
       messages: [
         { role: "system", content: DOC_EDIT_SYSTEM },
         {
@@ -259,8 +230,6 @@ export async function runDocEdit(
         },
       ],
     });
-
-    const raw = response.choices[0]?.message?.content?.trim() ?? "";
     if (!raw) return { success: false, error: "Empty response from AI" };
 
     let parsed: { content?: string };
@@ -273,11 +242,8 @@ export async function runDocEdit(
     if (!content) return { success: false, error: "AI returned no content" };
     return { success: true, content };
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[DocEdit] error:", msg);
-    if (msg.includes("401")) return { success: false, error: "Invalid GROQ_API_KEY" };
-    if (msg.includes("429")) return { success: false, error: "Rate limit — wait a moment and try again" };
-    return { success: false, error: msg };
+    console.error("[DocEdit] error:", err instanceof Error ? err.message : err);
+    return { success: false, error: describeOpenAIError(err) };
   }
 }
 
@@ -285,9 +251,8 @@ export async function runWritingAssist(
   action: WritingAction,
   text: string,
 ): Promise<{ success: true; reply: string } | { success: false; error: string }> {
-  const groq = getGroq();
-  if (!groq) {
-    return { success: false, error: "AI not configured (GROQ_API_KEY missing)" };
+  if (!isOpenAIConfigured()) {
+    return { success: false, error: NOT_CONFIGURED };
   }
   const trimmed = (text ?? "").trim();
   if (!trimmed) {
@@ -303,27 +268,20 @@ export async function runWritingAssist(
   }
 
   try {
-    const response = await groq.chat.completions.create({
-      model: "openai/gpt-oss-120b",
+    const reply = await createChatCompletion({
       temperature: cfg.temperature,
-      max_tokens: 1024,
+      maxTokens: 1024,
       messages: [
         { role: "system", content: `${cfg.system}\n\n${SHARED_OUTPUT_RULE}` },
         { role: "user", content: trimmed },
       ],
     });
-
-    const reply = response.choices[0]?.message?.content?.trim() ?? "";
     if (!reply) {
       return { success: false, error: "Empty response from AI" };
     }
     return { success: true, reply };
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[WritingAssist] error:", msg);
-    if (msg.includes("401")) return { success: false, error: "Invalid GROQ_API_KEY" };
-    if (msg.includes("429")) return { success: false, error: "Rate limit — wait a moment and try again" };
-    if (msg.toLowerCase().includes("timeout")) return { success: false, error: "AI service timed out" };
-    return { success: false, error: msg };
+    console.error("[WritingAssist] error:", err instanceof Error ? err.message : err);
+    return { success: false, error: describeOpenAIError(err) };
   }
 }
