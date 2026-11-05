@@ -12,6 +12,13 @@ const logoAttachment = { filename: 'clicshq-logo.png', path: LOGO_PATH, cid: LOG
 // Reusable <img> wordmark for the dark header.
 const LOGO_IMG = `<img src="cid:${LOGO_CID}" width="150" alt="ClicsHQ" style="display:block; margin:0 auto; height:auto; border:0;" />`;
 
+// Website fonts: Urbanist for text, Inter for buttons. Clients that load web fonts
+// (Apple Mail, iOS Mail, Outlook for Mac…) use them; others fall back to the stack.
+const FONT_LINK =
+  '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Urbanist:wght@400;500;600;700&display=swap" rel="stylesheet" />';
+const FONT_STACK = "'Urbanist','Segoe UI',Tahoma,Geneva,Verdana,sans-serif";
+const BUTTON_FONT_STACK = "'Inter','Urbanist','Segoe UI',Arial,sans-serif";
+
 // When no Gmail credentials are configured (e.g. local development), real SMTP
 // auth fails with `Missing credentials for "PLAIN"`. Rather than crash every
 // route that sends mail, fall back to a console "transport" that logs the email
@@ -115,15 +122,16 @@ function buildEmailTemplate(opts: {
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <meta name="color-scheme" content="light only" />
       <title>${heading}</title>
+      ${FONT_LINK}
     </head>
-    <body style="margin:0; padding:0; background-color:#f1f1f4; -webkit-text-size-adjust:100%;">
+    <body style="margin:0; padding:0; background-color:#f1f1f4; -webkit-text-size-adjust:100%; font-family:${FONT_STACK};">
       <!-- preheader (hidden) -->
       <div style="display:none; max-height:0; overflow:hidden; opacity:0;">${body}</div>
 
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f1f1f4; padding:24px 12px;">
         <tr>
           <td align="center">
-            <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px; width:100%; background-color:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 1px 4px rgba(16,24,40,0.06); font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px; width:100%; background-color:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 1px 4px rgba(16,24,40,0.06); font-family:${FONT_STACK};">
 
               <!-- Header -->
               <tr>
@@ -145,7 +153,7 @@ function buildEmailTemplate(opts: {
                     <tr>
                       <td align="center" style="border-radius:10px; background-color:${brand};">
                         <a href="${buttonUrl}" target="_blank"
-                           style="display:inline-block; padding:14px 36px; font-size:15px; font-weight:600; color:#ffffff; text-decoration:none; border-radius:10px; background-color:${brand};">
+                           style="display:inline-block; padding:14px 36px; font-family:${BUTTON_FONT_STACK}; font-size:15px; font-weight:600; color:#ffffff; text-decoration:none; border-radius:10px; background-color:${brand};">
                           ${buttonLabel}
                         </a>
                       </td>
@@ -198,14 +206,15 @@ export async function send2FACodeEmail(
       <!DOCTYPE html>
       <html>
         <head>
+          ${FONT_LINK}
           <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            body { font-family: ${FONT_STACK}; line-height: 1.6; color: #333; }
             .container { max-width: 600px; margin: 0 auto; padding: 20px; }
             .header { background: #000; color: #fff; padding: 28px 30px; text-align: center; border-radius: 10px 10px 0 0; }
             .header h1 { margin: 0; font-size: 22px; }
             .content { background: #fafafa; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb; }
             .code-box { background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 10px; padding: 20px; text-align: center; margin: 24px 0; }
-            .code { font-size: 36px; font-weight: 700; letter-spacing: 10px; color: #111; font-family: monospace; }
+            .code { font-size: 36px; font-weight: 700; letter-spacing: 10px; color: #111; font-family: ${FONT_STACK}; }
             .footer { text-align: center; margin-top: 20px; color: #9ca3af; font-size: 12px; }
           </style>
         </head>
@@ -274,6 +283,44 @@ export async function sendVerificationEmail(
   } catch (error) {
     console.error('Error sending verification email:', error);
     throw new Error('Failed to send verification email');
+  }
+}
+
+// User-typed text going into an HTML email
+const escapeHtml = (value: string) =>
+  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+export async function sendIntegrationRequestEmail(opts: {
+  toEmail: string;
+  displayName: string;
+  productName: string;
+  priority: string;
+}) {
+  const integrationsUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/apps-integrations`;
+  const product = escapeHtml(opts.productName);
+
+  const mailOptions = {
+    from: MAIL_FROM,
+    attachments: [logoAttachment],
+    to: opts.toEmail,
+    subject: `We received your ${opts.productName.replace(/[\r\n]+/g, ' ')} integration request`,
+    html: buildEmailTemplate({
+      heading: 'Integration request received',
+      greeting: `Hi ${escapeHtml(opts.displayName)},`,
+      intro: `Thanks for requesting a <strong>${product}</strong> integration.`,
+      body: `Our product team will review it (priority: ${escapeHtml(opts.priority)}). We'll let you know on this email as soon as it launches.`,
+      buttonLabel: 'View Integrations',
+      buttonUrl: integrationsUrl,
+      disclaimer: "If you didn't make this request, you can ignore this email.",
+    }),
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`Integration request email sent to ${opts.toEmail}`);
+  } catch (error) {
+    console.error('Error sending integration request email:', error);
+    throw new Error('Failed to send integration request email');
   }
 }
 
@@ -385,8 +432,10 @@ export async function sendSpaceInviteEmail(opts: SpaceInviteEmailOptions) {
     <!DOCTYPE html>
     <html>
       <head>
+        ${FONT_LINK}
         <style>
-          body { font-family: Arial, sans-serif; line-height: 1.6; color: #111; }
+          body { font-family: ${FONT_STACK}; line-height: 1.6; color: #111; }
+          .button { font-family: ${BUTTON_FONT_STACK}; }
           .container { max-width: 600px; margin: 0 auto; padding: 20px; }
           .header { background: #000; color: #fff; padding: 28px 30px; text-align: center; border-radius: 10px 10px 0 0; }
           .header h1 { margin: 0; font-size: 24px; }
@@ -456,15 +505,16 @@ export async function sendMentionNotificationEmail(
       <!DOCTYPE html>
       <html>
         <head>
+          ${FONT_LINK}
           <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #1f2937; }
+            body { font-family: ${FONT_STACK}; line-height: 1.6; color: #1f2937; }
             .container { max-width: 600px; margin: 0 auto; padding: 20px; }
             .header { background: #000; color: #fff; padding: 28px 30px; text-align: center; border-radius: 12px 12px 0 0; }
             .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
             .content { background: #ffffff; padding: 30px; border-radius: 0 0 12px 12px; border: 1px solid #e5e7eb; border-top: none; }
             .comment-box { background: #f9fafb; border-left: 4px solid #000000; padding: 16px; margin: 20px 0; border-radius: 8px; }
             .comment-box p { margin: 0; color: #374151; font-size: 14px; }
-            .task-link { display: inline-block; padding: 12px 24px; background: #000; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 500; margin: 20px 0; }
+            .task-link { display: inline-block; padding: 12px 24px; background: #000; color: #fff; text-decoration: none; border-radius: 8px; font-family: ${BUTTON_FONT_STACK}; font-weight: 500; margin: 20px 0; }
             .task-link:hover { background: #1f2937; }
             .footer { text-align: center; margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb; color: #9ca3af; font-size: 12px; }
             .space-badge { display: inline-block; background: #f3f4f6; padding: 4px 12px; border-radius: 16px; font-size: 13px; color: #374151; }

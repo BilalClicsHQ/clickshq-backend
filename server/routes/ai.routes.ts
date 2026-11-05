@@ -16,7 +16,7 @@ import {
 } from "../services/writingAssistService";
 import { db } from "../db";
 import { aiConversations, aiMessages } from "@shared/schema";
-import { eq, and, desc, asc } from "drizzle-orm";
+import { eq, and, desc, asc, isNull } from "drizzle-orm";
 
 const router = Router();
 
@@ -102,7 +102,8 @@ router.post("/edit-doc", requireAuth, async (req: Request, res: Response) => {
 
 // ─── Conversations (Clics AI chat history) ──────────────────────────────────
 
-// List the current user's conversations (most recent first).
+// List the current user's conversations (most recent first). Space AI-insights
+// chats live under their space and are not part of this list.
 router.get("/conversations", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = (req.user as any)?.id;
@@ -110,7 +111,7 @@ router.get("/conversations", requireAuth, async (req: Request, res: Response) =>
     const rows = await db
       .select()
       .from(aiConversations)
-      .where(eq(aiConversations.userId, userId))
+      .where(and(eq(aiConversations.userId, userId), isNull(aiConversations.spaceId)))
       .orderBy(desc(aiConversations.updatedAt));
     return res.json({ success: true, conversations: rows });
   } catch (err: any) {
@@ -177,7 +178,7 @@ router.get("/conversations/:id/messages", requireAuth, async (req: Request, res:
 });
 
 // Send a message in a conversation: persist the user turn, generate an AI reply
-// via Groq (with prior history), persist the reply, and return both.
+// via OpenAI (with prior history), persist the reply, and return both.
 router.post("/conversations/:id/messages", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = (req.user as any)?.id;
