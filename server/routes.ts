@@ -21,6 +21,7 @@ import { evaluateWorkflows } from "./services/workflowEngine";
 import { registerDocsRoutes } from "./controllers/docs";
 import aiRoutes from "./routes/ai.routes";
 import aiAgentRoutes from "./routes/ai-agents.routes";
+import spaceAiRoutes from "./routes/space-ai.routes";
 import { registerSlackRoutes } from "./controllers/slack/routes";
 import integrationAuthRoutes from "./routes/integration-auth.routes";
 import calendarRoutes from "./routes/calendar.routes";
@@ -49,6 +50,7 @@ import salesforceRoutes from "./routes/salesforce.routes";
 import gmailRoutes from "./routes/gmail.routes";
 import onedriveRoutes from "./routes/onedrive.routes";
 import notificationRoutes from "./routes/notifications.routes";
+import integrationRequestRoutes from "./routes/integration-requests.routes";
 import billingRoutes from "./routes/billing.routes";
 import polarWebhooksRoutes from "./routes/polar-webhooks.routes";
 import entitlementsRoutes from "./routes/entitlements.routes";
@@ -4549,6 +4551,8 @@ app.patch("/api/spaces/:spaceId/tasks/reorder", requireAuth, async (req, res) =>
   app.use('/api/ai', aiRoutes);
   // AI Agents (Project Planner, Task Creator, ...) — needs OPENAI_API_KEY
   app.use('/api/ai-agents', aiAgentRoutes);
+  // Space AI insights tab + space chat — needs OPENAI_API_KEY
+  app.use('/api/spaces/:spaceId/ai', spaceAiRoutes);
   // Integrations
   registerSlackRoutes(app);
   app.use('/api/auth', integrationAuthRoutes);
@@ -4578,6 +4582,7 @@ app.patch("/api/spaces/:spaceId/tasks/reorder", requireAuth, async (req, res) =>
   app.use('/api/integrations/files', fileAttachmentsRoutes);
   app.use('/api/tasks', taskSubtasksChecklistsRoutes);
   app.use('/api/notifications', notificationRoutes);
+  app.use('/api/integration-requests', integrationRequestRoutes);
   // Billing (Polar payment gateway) + Polar webhook receiver
   app.use('/api/billing', billingRoutes);
   app.use('/api/webhooks', polarWebhooksRoutes);

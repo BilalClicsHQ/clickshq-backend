@@ -241,7 +241,8 @@ Rules:
 - Flag users who appear overloaded
 - Provide short reasons
 - Suggest possible reassignment opportunities, but do not recommend automatic changes
-- If workload looks balanced, say so
+- Unassigned open tasks are a work distribution problem: if any exist, say how many in the summary and suggest an owner for the most important ones
+- Only say the workload looks balanced when every open task has an owner and no one is overloaded
 - Return only valid JSON
 `.trim();
 
@@ -324,7 +325,7 @@ function parseJson(raw: string): any | null {
 }
 
 // System prompt + populated user prompt → parsed JSON. Retries once on invalid JSON (per spec).
-async function runAgentPrompt(systemPrompt: string, userPrompt: string, maxTokens = 1500): Promise<any> {
+export async function runAgentPrompt(systemPrompt: string, userPrompt: string, maxTokens = 1500): Promise<any> {
   const messages: OpenAIMessage[] = [
     { role: "system", content: `${systemPrompt}\n\n${GENERAL_RULES}\n\n${FALLBACK_RULES}` },
     { role: "user", content: userPrompt },
@@ -353,9 +354,9 @@ async function runAgentPrompt(systemPrompt: string, userPrompt: string, maxToken
 type Priority = "High" | "Medium" | "Low";
 const APP_PRIORITY: Record<Priority, "high" | "normal" | "low"> = { High: "high", Medium: "normal", Low: "low" };
 
-const text = (value: unknown, max = 500) => (typeof value === "string" ? value.trim().slice(0, max) : "");
-const list = (value: unknown): any[] => (Array.isArray(value) ? value : []);
-const strings = (value: unknown, max = 20) =>
+export const text = (value: unknown, max = 500) => (typeof value === "string" ? value.trim().slice(0, max) : "");
+export const list = (value: unknown): any[] => (Array.isArray(value) ? value : []);
+export const strings = (value: unknown, max = 20) =>
   list(value).map((item) => text(item, 600)).filter(Boolean).slice(0, max);
 
 function priority(value: unknown): Priority {
@@ -399,31 +400,31 @@ function startOfDay(date: Date): number {
 }
 
 // Days from today until the date (negative = in the past); null when there's no valid date.
-function daysUntil(value: string | null | undefined): number | null {
+export function daysUntil(value: string | null | undefined): number | null {
   if (!value) return null;
   const date = new Date(value);
   if (isNaN(date.getTime())) return null;
   return Math.round((startOfDay(date) - startOfDay(new Date())) / DAY_MS);
 }
 
-function daysSince(value: Date | string | null | undefined): number | null {
+export function daysSince(value: Date | string | null | undefined): number | null {
   if (!value) return null;
   const date = new Date(value);
   if (isNaN(date.getTime())) return null;
   return Math.floor((Date.now() - date.getTime()) / DAY_MS);
 }
 
-// Due date `days` from today, stored as ISO like the task UI does (noon avoids timezone day-shifts).
+// Due date `days` from today as yyyy-MM-dd — the format the task detail page stores and reads.
 function dueDateInDays(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() + days);
-  d.setHours(12, 0, 0, 0);
-  return d.toISOString();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-const formatDue = (value: string | null | undefined) => (value ? new Date(value).toDateString() : "No due date");
+export const formatDue = (value: string | null | undefined) => (value ? new Date(value).toDateString() : "No due date");
 
-async function getAccessibleSpace(user: AgentUser, spaceId: unknown): Promise<Space> {
+export async function getAccessibleSpace(user: AgentUser, spaceId: unknown): Promise<Space> {
   if (typeof spaceId !== "string" || !spaceId) throw new AgentError(400, "Please choose a space.");
   const space = await storage.getSpace(spaceId);
   if (!space) throw new AgentError(404, "Space not found");
@@ -438,9 +439,9 @@ async function getUserSpaces(user: AgentUser): Promise<Space[]> {
   return list.slice(0, MAX_SPACES);
 }
 
-type TaskRow = { task: Task; statusName: string; kind: StatusKind };
+export type TaskRow = { task: Task; statusName: string; kind: StatusKind };
 
-async function loadSpaceTasks(spaceId: string): Promise<TaskRow[]> {
+export async function loadSpaceTasks(spaceId: string): Promise<TaskRow[]> {
   const [statuses, tasks] = await Promise.all([storage.getSpaceStatuses(spaceId), storage.getAllTasks(spaceId)]);
   const statusById = new Map(statuses.map((s) => [s.id, s.name]));
   return tasks.map((task) => {
@@ -456,7 +457,7 @@ async function firstStatusId(spaceId: string): Promise<string> {
   return first.id;
 }
 
-async function loadUserNames(ids: string[]): Promise<Map<string, string>> {
+export async function loadUserNames(ids: string[]): Promise<Map<string, string>> {
   const unique = [...new Set(ids.filter(Boolean))];
   const users = await Promise.all(unique.map((id) => storage.getUser(id)));
   return new Map(unique.map((id, i) => [id, users[i]?.displayName || users[i]?.email || "Unknown user"]));
@@ -819,11 +820,21 @@ async function previewWorkloadAnalyzer(user: AgentUser, input: any) {
   const spaceList = input.spaceId ? [await getAccessibleSpace(user, input.spaceId)] : await getUserSpaces(user);
 
   const perUser = new Map<string, { open: number; overdue: number; dueNext7Days: number; tasks: string[] }>();
+  const unassigned: string[] = [];
+  let unassignedCount = 0;
   for (const space of spaceList) {
     for (const { task, statusName, kind } of await loadSpaceTasks(space.id)) {
       if (kind === "done") continue;
       const due = daysUntil(task.dueDate);
-      for (const id of task.assigneeIds ?? []) {
+      const assigneeIds = task.assigneeIds ?? [];
+      if (assigneeIds.length === 0) {
+        unassignedCount++;
+        if (unassigned.length < 15) {
+          unassigned.push(`${task.name} (${space.name}, ${statusName}, due: ${formatDue(task.dueDate)})`);
+        }
+        continue;
+      }
+      for (const id of assigneeIds) {
         const entry = perUser.get(id) ?? { open: 0, overdue: 0, dueNext7Days: 0, tasks: [] };
         entry.open++;
         if (due !== null && due < 0) entry.overdue++;
@@ -836,22 +847,25 @@ async function previewWorkloadAnalyzer(user: AgentUser, input: any) {
     }
   }
 
-  if (perUser.size === 0) {
+  if (perUser.size === 0 && unassignedCount === 0) {
     return {
-      summary: "No open tasks are assigned to anyone yet, so there is no workload to analyze.",
+      summary: "There are no open tasks right now, so there is no workload to analyze.",
       overloaded_users: [],
       reassignment_suggestions: [],
     };
   }
 
   const names = await loadUserNames([...perUser.keys()]);
-  const workloadData = [...perUser].map(([id, w]) => ({
-    name: names.get(id),
-    open_tasks: w.open,
-    overdue_tasks: w.overdue,
-    due_in_next_7_days: w.dueNext7Days,
-    tasks: w.tasks,
-  }));
+  const workloadData = {
+    team: [...perUser].map(([id, w]) => ({
+      name: names.get(id),
+      open_tasks: w.open,
+      overdue_tasks: w.overdue,
+      due_in_next_7_days: w.dueNext7Days,
+      tasks: w.tasks,
+    })),
+    unassigned_tasks: { count: unassignedCount, examples: unassigned },
+  };
   const raw = await runAgentPrompt(
     WORKLOAD_ANALYZER_SYSTEM,
     fill(WORKLOAD_ANALYZER_USER, { workload_data: JSON.stringify(workloadData, null, 2) }),
