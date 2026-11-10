@@ -18,6 +18,12 @@ import QRCode from "qrcode";
 // Workflows + Docs + Integrations (migrated from Nexus)
 import workflowRoutes from "./routes/workflows.routes";
 import { evaluateWorkflows } from "./services/workflowEngine";
+import {
+  notifySpaceInvite,
+  notifyTaskAssigned,
+  notifyTaskComment,
+  notifyTaskCompleted,
+} from "./services/activityNotifications";
 import { registerDocsRoutes } from "./controllers/docs";
 import aiRoutes from "./routes/ai.routes";
 import aiAgentRoutes from "./routes/ai-agents.routes";
@@ -1962,6 +1968,14 @@ app.post("/api/tasks/:taskId/comments", requireAuth, async (req, res) => {
       mentionedUserIds: mentionedUserIds || []
     }).returning();
 
+    // In-app notifications for mentions and for everyone on the task (fire-and-forget)
+    notifyTaskComment({
+      taskId,
+      actorId: userId,
+      content: content.trim(),
+      mentionedUserIds: Array.isArray(mentionedUserIds) ? mentionedUserIds : [],
+    });
+
     // ✅ SEND EMAILS TO MENTIONED USERS
     if (mentionedUserIds && mentionedUserIds.length > 0) {
       try {
@@ -1979,7 +1993,7 @@ app.post("/api/tasks/:taskId/comments", requireAuth, async (req, res) => {
             id: users.id,
             email: users.email,
             displayName: users.displayName
-          }).from(users).where(sql`${users.id} IN (${mentionedUserIds.join(',')})`);
+          }).from(users).where(inArray(users.id, mentionedUserIds));
 
           // Import email function
           const { sendMentionNotificationEmail } = await import('./email');
@@ -2478,6 +2492,9 @@ app.post("/api/spaces/:spaceId/invite", requireAuth, async (req, res) => {
         status: "accepted",
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       });
+
+      // In-app notification for the added user (fire-and-forget)
+      notifySpaceInvite({ userId: existingUser.id, spaceId, spaceName: space.name, actorId: ownerId });
 
       // Notify the added user
       await sendSpaceInviteEmail({
@@ -3790,6 +3807,9 @@ app.post("/api/spaces/:spaceId/tasks", requireAuth, async (req, res) => {
       console.error("[Workflow] task.created hook error:", err)
     );
 
+    // Tell whoever this task was assigned to (fire-and-forget)
+    notifyTaskAssigned({ task, actorId: userId, assigneeIds: task.assigneeIds ?? [], previousAssigneeIds: [] });
+
     res.status(201).json(task);
   } catch (error) {
     console.error("Error creating task:", error);
@@ -3842,6 +3862,19 @@ app.patch("/api/tasks/:id", requireAuth, async (req, res) => {
       const oldA = (oldTask.assigneeIds || []).join(",");
       const newA = (updatedTask.assigneeIds || []).join(",");
       if (updates.assigneeIds !== undefined && oldA !== newA) fireWf("task.assignee_changed");
+
+      // In-app notifications (fire-and-forget)
+      if (updates.assigneeIds !== undefined && oldA !== newA) {
+        notifyTaskAssigned({
+          task: updatedTask,
+          actorId: userId,
+          assigneeIds: updatedTask.assigneeIds ?? [],
+          previousAssigneeIds: oldTask.assigneeIds ?? [],
+        });
+      }
+      if (updates.statusId !== undefined && oldTask.statusId !== updatedTask.statusId) {
+        notifyTaskCompleted({ task: updatedTask, actorId: userId });
+      }
     }
 
     res.json(updatedTask);
