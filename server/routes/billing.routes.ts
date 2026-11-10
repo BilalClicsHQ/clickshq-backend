@@ -22,6 +22,7 @@ import {
   getActiveProductIds,
   getActiveSeatSubscription,
   toSeatState,
+  mirrorToSeatState,
   updateSubscriptionSeats,
   changeSubscriptionProduct,
   cancelActiveSubscription,
@@ -135,9 +136,26 @@ router.post("/portal", requireAuth, async (req: Request, res: Response) => {
 // GET /api/billing/seats — current seat state for the caller's active sub.
 // Read live from Polar so it works even when the local mirror is unsynced.
 router.get("/seats", requireAuth, async (req: Request, res: Response) => {
-  if (!isPolarConfigured()) return res.json({ hasSubscription: false });
+  const userId = (req.user as any)?.id;
+
+  // Polar is the live source of seat state. When it isn't configured — local dev,
+  // or a deploy without keys — read the local subscriptions mirror instead so the
+  // subscription screens remain reachable. With Polar configured this branch never
+  // runs and the behaviour below is unchanged.
+  if (!isPolarConfigured()) {
+    try {
+      const mirrored = await getActiveSubscriptionForUser(userId);
+      if (!mirrored || !["active", "trialing", "past_due"].includes(mirrored.status)) {
+        return res.json({ hasSubscription: false });
+      }
+      return res.json({ hasSubscription: true, ...mirrorToSeatState(mirrored) });
+    } catch (err: any) {
+      console.error("[billing] seats mirror error:", err?.message ?? err);
+      return res.json({ hasSubscription: false });
+    }
+  }
+
   try {
-    const userId = (req.user as any)?.id;
     const sub = await getActiveSeatSubscription(userId);
     if (!sub) return res.json({ hasSubscription: false });
     res.json({ hasSubscription: true, ...toSeatState(sub) });
