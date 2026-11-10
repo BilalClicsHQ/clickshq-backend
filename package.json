@@ -5,10 +5,10 @@
   "license": "MIT",
   "scripts": {
     "prepare": "node .husky/install.mjs",
-    "dev": "cross-env NODE_ENV=development tsx --env-file=.env server/index.ts",
-    "dev:watch": "cross-env NODE_ENV=development tsx watch --env-file=.env server/index.ts",
-    "build": "node build-vercel.mjs",
-    "start": "cross-env NODE_ENV=production node dist/index.js",
+    "dev": "node init && cross-env NODE_ENV=development tsx --env-file=.env server/index.ts",
+    "dev:watch": "node init && cross-env NODE_ENV=development tsx watch --env-file=.env server/index.ts",
+    "build": "node init && node build-vercel.mjs",
+    "start": "node init && cross-env NODE_ENV=production node dist/index.js",
     "check": "tsc",
     "db:push": "drizzle-kit push"
   },
@@ -49,6 +49,7 @@
     "pdfjs-dist": "^5.6.205",
     "pg": "^8.16.3",
     "qrcode": "^1.5.4",
+    "resend": "^6.37.0",
     "sanitize-html": "^2.17.4",
     "word-extractor": "^1.0.4",
     "ws": "^8.18.0",

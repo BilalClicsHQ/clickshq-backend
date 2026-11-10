@@ -542,6 +542,35 @@ export function toSeatState(s: any): SeatSubscriptionState {
   };
 }
 
+/** Map a row of our local `subscriptions` mirror to the same shape `toSeatState`
+ *  produces from a live Polar subscription.
+ *
+ *  Only used when Polar is unconfigured (local dev, or a deploy without keys) so
+ *  the subscription screens stay reachable. The mirror has no seats column, so the
+ *  seat count rides in the row's metadata. This is display state only — it never
+ *  feeds a charge, which Polar alone computes. */
+export function mirrorToSeatState(s: any): SeatSubscriptionState {
+  const metaSeats = Number((s?.metadata as any)?.seats);
+  const seats = Number.isInteger(metaSeats) && metaSeats > 0 ? metaSeats : 1;
+  const amount = typeof s?.amount === "number" ? s.amount : null;
+  return {
+    subscriptionId: s.polarSubscriptionId ?? s.id,
+    productId: s.polarProductId ?? null,
+    productName: s.productName ?? null,
+    status: s.status,
+    seats,
+    amount,
+    perSeatAmount: amount != null ? Math.round(amount / seats) : null,
+    currency: s.currency ?? null,
+    recurringInterval: s.recurringInterval ?? null,
+    currentPeriodStart: s.currentPeriodStart ? new Date(s.currentPeriodStart).toISOString() : null,
+    currentPeriodEnd: s.currentPeriodEnd ? new Date(s.currentPeriodEnd).toISOString() : null,
+    cancelAtPeriodEnd: Boolean(s.cancelAtPeriodEnd),
+    pendingSeats: null,
+    pendingAppliesAt: null,
+  };
+}
+
 // The caller's active, seat-eligible subscription (one of our configured Teams
 // products), fetched live from Polar by external customer id. null if none.
 export async function getActiveSeatSubscription(userId: string): Promise<any | null> {
