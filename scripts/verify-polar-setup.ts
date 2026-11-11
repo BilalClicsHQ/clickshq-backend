@@ -104,9 +104,12 @@ for (const interval of ["monthly", "yearly"] as const) {
   const wantInterval = interval === "monthly" ? "month" : "year";
   const prices: any[] = (p.prices ?? []).filter((pr: any) => !pr.is_archived);
   const priceKinds = prices.map((pr) => pr.amount_type);
-  // seat_based exposes price_per_seat; fixed exposes price_amount. Either prorates.
+  // A seat_based price has no top-level amount: the figure sits on each entry of
+  // seat_tiers.tiers. A fixed price exposes price_amount. Either prorates.
   const priced = prices.find((pr) => pr.amount_type === "seat_based" || pr.amount_type === "fixed");
-  const perSeat = priced?.price_per_seat ?? priced?.price_amount ?? null;
+  const seatTiers: any[] = priced?.seat_tiers?.tiers ?? [];
+  const perSeat =
+    seatTiers[0]?.price_per_seat ?? priced?.price_per_seat ?? priced?.price_amount ?? null;
 
   if (p.is_archived) fail(`${label} ${interval}: product "${p.name}" is ARCHIVED`);
   if (!p.is_recurring) fail(`${label} ${interval}: "${p.name}" is one-time, not a subscription product`);
@@ -133,9 +136,8 @@ for (const interval of ["monthly", "yearly"] as const) {
         `so it would display seats × $${(perSeat / 100).toFixed(2)} while Polar charges a flat $${(perSeat / 100).toFixed(2)}`);
     }
     // Volume tiers beyond the first would make the advertised flat per-seat price wrong.
-    const tiers = priced.seat_tiers?.tiers ?? [];
-    if (tiers.length > 1) {
-      fail(`${label} ${interval}: "${p.name}" has ${tiers.length} volume tiers, but the pricing page shows one flat per-seat price`);
+    if (seatTiers.length > 1) {
+      fail(`${label} ${interval}: "${p.name}" has ${seatTiers.length} volume tiers, but the pricing page shows one flat per-seat price`);
     }
   }
 }
@@ -151,9 +153,17 @@ if (token) {
   if (!org) fail("could not read the organization");
   else {
     console.log(`  organization: ${org.name} (${org.slug})`);
-    if (!org.feature_settings?.seat_based_pricing_enabled) {
+    // Seat-based pricing was gated behind a beta flag that Polar has since removed
+    // from this payload, so its ABSENCE says nothing. Only an explicit false means
+    // the organization cannot sell seat products.
+    const seatFlag = org.feature_settings?.seat_based_pricing_enabled;
+    if (seatFlag === false) {
       fail("seat-based pricing is NOT enabled on this organization — seat products cannot be sold");
-    } else pass("seat-based pricing enabled");
+    } else if (seatFlag === true) {
+      pass("seat-based pricing enabled");
+    } else {
+      console.log("· seat-based pricing: no longer reported by Polar — the product checks above cover it");
+    }
 
     if (SERVER === "production") {
       if (!org.details_submitted_at) fail(`organization status is "${org.status}" with no details submitted — Polar will not accept real payments until onboarding is completed`);
