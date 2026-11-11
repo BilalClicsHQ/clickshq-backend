@@ -56,9 +56,15 @@ export function setupAuth() {
   }));
 
    // ========== GOOGLE STRATEGY ==========
+   // Sign-in may use a Google OAuth client of its own. The client that carries the
+   // integrations (Drive, Calendar, Gmail) needs restricted scopes, and a project
+   // holding those admits only its listed test users until Google verifies it — so
+   // sharing it would lock every other user out of sign-in itself. Leave these two
+   // vars unset and sign-in falls back to the shared client, unchanged; drop them
+   // for good once the integration project is verified.
    passport.use(new GoogleStrategy({
-    clientID: process.env.GOOGLE_CLIENT_ID!,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    clientID: (process.env.GOOGLE_LOGIN_CLIENT_ID || process.env.GOOGLE_CLIENT_ID)!,
+    clientSecret: (process.env.GOOGLE_LOGIN_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET)!,
     callbackURL: process.env.GOOGLE_CALLBACK_URL!,
     scope: ['profile', 'email']
   },
