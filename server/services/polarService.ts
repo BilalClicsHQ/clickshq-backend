@@ -25,6 +25,12 @@ type PolarServer = "sandbox" | "production";
 export interface PlanPrice {
   /** Polar product ID for this plan/interval, or null if not configured. */
   productId: string | null;
+  /**
+   * Per-seat price in cents, read back from the Polar product itself. null until
+   * `getBillingConfigWithPrices()` has filled it in, or when the product isn't
+   * configured. Never a number written in our source — Polar owns prices.
+   */
+  perSeatAmount?: number | null;
 }
 
 export interface BillingConfig {
@@ -32,6 +38,7 @@ export interface BillingConfig {
   server: PolarServer;
   plans: {
     teams: { monthly: PlanPrice; yearly: PlanPrice };
+    enterprise: { monthly: PlanPrice; yearly: PlanPrice };
   };
 }
 
@@ -88,18 +95,74 @@ export function getBillingConfig(): BillingConfig {
     server: getPolarServer(),
     plans: {
       teams: {
-        monthly: { productId: teamsRecurringProductId("month") },
-        yearly: { productId: teamsRecurringProductId("year") },
+        monthly: { productId: teamsRecurringProductId("month"), perSeatAmount: null },
+        yearly: { productId: teamsRecurringProductId("year"), perSeatAmount: null },
+      },
+      enterprise: {
+        monthly: { productId: enterpriseRecurringProductId("month"), perSeatAmount: null },
+        yearly: { productId: enterpriseRecurringProductId("year"), perSeatAmount: null },
       },
     },
   };
 }
 
+// ── Product prices, read from Polar ──────────────────────────────────────────
+// The pricing UI must never print a number we made up, so per-seat amounts are
+// fetched from the Polar product. Cached because /config is called on every
+// billing page load and the catalog changes about never.
+const PRICE_TTL_MS = 10 * 60_000;
+const priceCache = new Map<string, { at: number; cents: number | null }>();
+
+async function perSeatAmountFor(productId: string): Promise<number | null> {
+  const hit = priceCache.get(productId);
+  if (hit && Date.now() - hit.at < PRICE_TTL_MS) return hit.cents;
+  let cents: number | null = null;
+  try {
+    const product: any = await getClient().products.get({ id: productId });
+    const prices: any[] = product?.prices ?? [];
+    // Take the first price that carries a fixed amount. Usage- or metered-based
+    // prices have no single figure to show, and are left as null on purpose.
+    for (const p of prices) {
+      const amount = p?.priceAmount ?? p?.price_amount ?? null;
+      if (typeof amount === "number") {
+        cents = amount;
+        break;
+      }
+    }
+  } catch (err: any) {
+    console.error("[billing] price lookup failed for", productId, err?.message ?? err);
+  }
+  priceCache.set(productId, { at: Date.now(), cents });
+  return cents;
+}
+
+/** `getBillingConfig()` with each configured product's per-seat price filled in
+ *  from Polar. Falls back to the plain config if Polar is unreachable. */
+export async function getBillingConfigWithPrices(): Promise<BillingConfig> {
+  const cfg = getBillingConfig();
+  if (!isPolarConfigured()) return cfg;
+  const slots: PlanPrice[] = [
+    cfg.plans.teams.monthly,
+    cfg.plans.teams.yearly,
+    cfg.plans.enterprise.monthly,
+    cfg.plans.enterprise.yearly,
+  ];
+  await Promise.all(
+    slots.map(async (slot) => {
+      if (slot.productId) slot.perSeatAmount = await perSeatAmountFor(slot.productId);
+    }),
+  );
+  return cfg;
+}
+
 /** All Polar product IDs we recognise — used to allowlist checkout requests. */
 export function configuredProductIds(): string[] {
-  return [teamsRecurringProductId("month"), teamsRecurringProductId("year")].filter(
-    (v): v is string => Boolean(v),
-  );
+  return [
+    teamsRecurringProductId("month"),
+    teamsRecurringProductId("year"),
+    enterpriseRecurringProductId("month"),
+    enterpriseRecurringProductId("year"),
+  ].filter((v): v is string => Boolean(v));
 }
 
 function returnBase(): string {
@@ -182,6 +245,22 @@ export function teamsRecurringProductId(interval: string): string | null {
     (sb ? process.env.POLAR_SANDBOX_PRODUCT_TEAMS_MONTHLY : "") || process.env.POLAR_PRODUCT_TEAMS_MONTHLY || "";
   const yearly =
     (sb ? process.env.POLAR_SANDBOX_PRODUCT_TEAMS_YEARLY : "") || process.env.POLAR_PRODUCT_TEAMS_YEARLY || "";
+  return ((interval === "year" ? yearly : monthly) || "").trim() || null;
+}
+
+// Recurring Enterprise product id for the interval. Same env-aware rules as
+// Teams above. Unset until the Enterprise products exist in the Polar catalog,
+// in which case the UI offers "contact sales" instead of a price.
+export function enterpriseRecurringProductId(interval: string): string | null {
+  const sb = isSandbox();
+  const monthly =
+    (sb ? process.env.POLAR_SANDBOX_PRODUCT_ENTERPRISE_MONTHLY : "") ||
+    process.env.POLAR_PRODUCT_ENTERPRISE_MONTHLY ||
+    "";
+  const yearly =
+    (sb ? process.env.POLAR_SANDBOX_PRODUCT_ENTERPRISE_YEARLY : "") ||
+    process.env.POLAR_PRODUCT_ENTERPRISE_YEARLY ||
+    "";
   return ((interval === "year" ? yearly : monthly) || "").trim() || null;
 }
 

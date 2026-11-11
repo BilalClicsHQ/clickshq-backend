@@ -14,6 +14,7 @@ import { requireAuth } from "../auth";
 import {
   isPolarConfigured,
   getBillingConfig,
+  getBillingConfigWithPrices,
   configuredProductIds,
   createCheckout,
   createPortalUrl,
@@ -45,8 +46,14 @@ function notConfigured(res: Response) {
 
 // GET /api/billing/config — plan → Polar product-id map + whether Polar is live.
 // Safe to call even when Polar is unconfigured (drives the UI state).
-router.get("/config", requireAuth, (_req: Request, res: Response) => {
-  res.json(getBillingConfig());
+router.get("/config", requireAuth, async (_req: Request, res: Response) => {
+  try {
+    res.json(await getBillingConfigWithPrices());
+  } catch (err: any) {
+    // Prices are a display nicety; the product ids are what the UI needs to work.
+    console.error("[billing] config price lookup failed:", err?.message ?? err);
+    res.json(getBillingConfig());
+  }
 });
 
 // GET /api/billing/subscription — the caller's current subscription (or null).

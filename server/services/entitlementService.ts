@@ -46,6 +46,9 @@ function productPlanMap(): Record<string, PlanKey> {
   const teams = cfg.plans.teams;
   if (teams.monthly.productId) map[teams.monthly.productId] = "teams";
   if (teams.yearly.productId) map[teams.yearly.productId] = "teams";
+  const ent = cfg.plans.enterprise;
+  if (ent.monthly.productId) map[ent.monthly.productId] = "enterprise";
+  if (ent.yearly.productId) map[ent.yearly.productId] = "enterprise";
   return map;
 }
 
