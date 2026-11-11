@@ -120,14 +120,22 @@ async function perSeatAmountFor(productId: string): Promise<number | null> {
   try {
     const product: any = await getClient().products.get({ id: productId });
     const prices: any[] = product?.prices ?? [];
-    // Take the first price that carries a per-seat or fixed amount. A seat_based
-    // price exposes `price_per_seat`, a fixed one `price_amount` — both are read,
-    // because our products are seat_based and reading only the fixed field left
-    // every one of them with no price at all. Usage- and metered-based prices
-    // have no single figure to show and are left as null on purpose.
+    // Take the first price that carries a per-seat or fixed amount.
+    //
+    // A seat_based price has no amount field of its own: the figure lives on its
+    // seat tiers (seatTiers.tiers[].pricePerSeat). A fixed price has priceAmount.
+    // Both spellings are read because the SDK returns camelCase while the REST
+    // payload is snake_case. Usage- and metered-based prices have no single
+    // figure to show and are left as null on purpose.
+    //
+    // Our seat products are single-tier by policy — verify-polar-setup.ts fails
+    // any product with more than one tier, because the pricing UI shows one flat
+    // per-seat price — so the first tier is the price.
     for (const p of prices) {
-      const amount =
-        p?.pricePerSeat ?? p?.price_per_seat ?? p?.priceAmount ?? p?.price_amount ?? null;
+      const tiers: any[] = p?.seatTiers?.tiers ?? p?.seat_tiers?.tiers ?? [];
+      const perSeat = tiers[0]?.pricePerSeat ?? tiers[0]?.price_per_seat ?? null;
+      const flat = p?.priceAmount ?? p?.price_amount ?? null;
+      const amount = typeof perSeat === "number" ? perSeat : flat;
       if (typeof amount === "number") {
         cents = amount;
         break;
