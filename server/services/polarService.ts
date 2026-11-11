@@ -120,10 +120,14 @@ async function perSeatAmountFor(productId: string): Promise<number | null> {
   try {
     const product: any = await getClient().products.get({ id: productId });
     const prices: any[] = product?.prices ?? [];
-    // Take the first price that carries a fixed amount. Usage- or metered-based
-    // prices have no single figure to show, and are left as null on purpose.
+    // Take the first price that carries a per-seat or fixed amount. A seat_based
+    // price exposes `price_per_seat`, a fixed one `price_amount` — both are read,
+    // because our products are seat_based and reading only the fixed field left
+    // every one of them with no price at all. Usage- and metered-based prices
+    // have no single figure to show and are left as null on purpose.
     for (const p of prices) {
-      const amount = p?.priceAmount ?? p?.price_amount ?? null;
+      const amount =
+        p?.pricePerSeat ?? p?.price_per_seat ?? p?.priceAmount ?? p?.price_amount ?? null;
       if (typeof amount === "number") {
         cents = amount;
         break;
