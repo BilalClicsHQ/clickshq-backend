@@ -35,6 +35,20 @@ function verifySignedState(state: string): { userId: string; provider: Provider;
   }
 }
 
+// ─── PKCE (derived from the state, so it stays stateless) ───────────────────
+// Salesforce requires PKCE and does not allow the requirement to be turned off. Rather
+// than park a verifier in a session or a Map — which the signed state above exists
+// specifically to avoid — derive it from the state with the same server secret. The
+// callback re-derives it from the state it has already verified, so nothing has to be
+// remembered between the two requests, and the verifier itself never appears in a URL.
+function pkceVerifier(state: string): string {
+  return crypto.createHmac('sha256', STATE_SECRET).update(`pkce:${state}`).digest('base64url');
+}
+
+function pkceChallenge(verifier: string): string {
+  return crypto.createHash('sha256').update(verifier).digest('base64url');
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // GOOGLE DRIVE — OAuth Init
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -652,7 +666,9 @@ router.get('/figma/init', requireAuth, async (req: Request, res: Response) => {
     const params = new URLSearchParams({
       client_id: process.env.FIGMA_CLIENT_ID,
       redirect_uri: redirectUri,
-      scope: 'current_user:read,file_content:read,file_metadata:read,projects:read',
+      // `projects:read` no longer exists — Figma renamed projects to folders, and an
+      // app cannot enable the old name, so asking for it risks the whole grant.
+      scope: 'current_user:read,file_content:read,file_metadata:read,folders:read',
       state,
       response_type: 'code',
     });
@@ -1094,6 +1110,8 @@ router.get('/salesforce/init', requireAuth, async (req: Request, res: Response) 
       redirect_uri: redirectUri,
       scope: 'api refresh_token id full',
       state,
+      code_challenge: pkceChallenge(pkceVerifier(state)),
+      code_challenge_method: 'S256',
     });
 
     const authUrl = `${loginUrl}/services/oauth2/authorize?${params.toString()}`;
@@ -1132,6 +1150,8 @@ router.get('/salesforce/callback', async (req: Request, res: Response) => {
         client_id: process.env.SALESFORCE_CLIENT_ID!,
         client_secret: process.env.SALESFORCE_CLIENT_SECRET!,
         redirect_uri: redirectUri,
+        // Re-derived from the state verified just above, never stored.
+        code_verifier: pkceVerifier(String(state)),
       }),
     });
 
