@@ -35,7 +35,7 @@
 // ── Plans ────────────────────────────────────────────────────────────────────
 
 /** Logical plan identifiers. Extend this union to add tiers (e.g. "enterprise"). */
-export type PlanKey = "free" | "teams";
+export type PlanKey = "free" | "teams" | "enterprise";
 
 /** Billing cadence. Matches Polar's `recurring_interval` values. */
 export type BillingInterval = "month" | "year";
@@ -61,7 +61,7 @@ export interface PlanDefinition {
 }
 
 /** Canonical plan order, lowest tier first. Drives pricing tables and lookups. */
-export const PLAN_KEYS: PlanKey[] = ["free", "teams"];
+export const PLAN_KEYS: PlanKey[] = ["free", "teams", "enterprise"];
 
 export const PLANS: Record<PlanKey, PlanDefinition> = {
   free: {
@@ -82,6 +82,17 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
     // Display only — real prices are configured on the Polar products.
     price: { month: 900, year: 9000, currency: "USD" },
     highlights: ["Unlimited automations", "Premium integrations", "Priority support"],
+  },
+  enterprise: {
+    key: "enterprise",
+    name: "Enterprise",
+    description: "Unlimited seats, custom AI training, and enterprise security controls.",
+    tier: 20,
+    isPaid: true,
+    // null = quoted per customer. The real figures live on the Polar product and
+    // are read back from it; nothing is charged off anything written here.
+    price: { month: null, year: null, currency: "USD" },
+    highlights: ["Unlimited users & sub-teams", "SSO & audit logs", "24/7 dedicated support"],
   },
 };
 
@@ -169,6 +180,7 @@ export interface PlanLimits {
 export const PLAN_LIMITS: Record<PlanKey, PlanLimits> = {
   free: { maxAutomations: 3, maxDocs: 50, maxFileUploadMb: 10 },
   teams: { maxAutomations: UNLIMITED, maxDocs: UNLIMITED, maxFileUploadMb: 100 },
+  enterprise: { maxAutomations: UNLIMITED, maxDocs: UNLIMITED, maxFileUploadMb: 500 },
 };
 
 // ── Subscription status semantics ─────────────────────────────────────────────

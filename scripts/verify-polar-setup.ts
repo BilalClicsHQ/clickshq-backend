@@ -29,14 +29,25 @@ const token = SANDBOX
 const webhookSecret = SANDBOX
   ? process.env.POLAR_SANDBOX_WEBHOOK_SECRET || process.env.POLAR_WEBHOOK_SECRET
   : process.env.POLAR_WEBHOOK_SECRET;
-const products = {
-  monthly: (SANDBOX ? process.env.POLAR_SANDBOX_PRODUCT_TEAMS_MONTHLY : "") || process.env.POLAR_PRODUCT_TEAMS_MONTHLY,
-  yearly: (SANDBOX ? process.env.POLAR_SANDBOX_PRODUCT_TEAMS_YEARLY : "") || process.env.POLAR_PRODUCT_TEAMS_YEARLY,
-};
+const envProduct = (plan: "TEAMS" | "ENTERPRISE", interval: "MONTHLY" | "YEARLY") =>
+  (SANDBOX ? process.env[`POLAR_SANDBOX_PRODUCT_${plan}_${interval}`] : "") ||
+  process.env[`POLAR_PRODUCT_${plan}_${interval}`];
 
-// Must match the per-seat prices the pricing UI advertises
-// (clickshq-frontend/src/components/ui/BillingSubscription.tsx).
-const EXPECTED_CENTS = { monthly: 1200, yearly: 10000 };
+// Teams' per-seat prices are hard-coded in the pricing UI
+// (clickshq-frontend/src/components/ui/BillingSubscription.tsx), so a drift
+// between Polar and the page would charge a different amount than it advertises
+// — that is asserted below. Enterprise has no hard-coded price: the app reads it
+// back from Polar and renders whatever Polar says, so there is nothing to drift
+// from and the figure is only reported.
+const PLANS: {
+  plan: "TEAMS" | "ENTERPRISE";
+  label: string;
+  required: boolean;
+  expectedCents: { monthly: number; yearly: number } | null;
+}[] = [
+  { plan: "TEAMS", label: "teams", required: true, expectedCents: { monthly: 1200, yearly: 10000 } },
+  { plan: "ENTERPRISE", label: "enterprise", required: false, expectedCents: null },
+];
 
 let failures = 0;
 const fail = (msg: string) => { failures++; console.log(`✗ ${msg}`); };
@@ -73,13 +84,21 @@ if (!webhookSecret) {
 // pay-what-you-want (`custom`) price has no per-seat amount to prorate against, so
 // seat and plan changes would silently produce wrong amounts. This is the check
 // that matters most.
-for (const [interval, id] of Object.entries(products) as ["monthly" | "yearly", string | undefined][]) {
-  const varName = SANDBOX ? `POLAR_SANDBOX_PRODUCT_TEAMS_${interval.toUpperCase()}` : `POLAR_PRODUCT_TEAMS_${interval.toUpperCase()}`;
-  if (!id) { fail(`${interval}: not configured (${varName})`); continue; }
+for (const { plan, label, required, expectedCents } of PLANS) {
+for (const interval of ["monthly", "yearly"] as const) {
+  const id = envProduct(plan, interval.toUpperCase() as "MONTHLY" | "YEARLY");
+  const varName = `${SANDBOX ? "POLAR_SANDBOX" : "POLAR"}_PRODUCT_${plan}_${interval.toUpperCase()}`;
+  if (!id) {
+    if (required) fail(`${label} ${interval}: not configured (${varName})`);
+    // An unconfigured optional tier simply isn't on sale; the UI offers
+    // "contact sales" for it instead of a price, which is a valid deploy.
+    else console.log(`· ${label} ${interval}: not configured (${varName}) — tier not sold self-serve`);
+    continue;
+  }
   if (!token) continue;
 
   const res = await fetch(`${API}/v1/products/${id}`, { headers: { Authorization: `Bearer ${token.trim()}` } });
-  if (!res.ok) { fail(`${interval}: product ${id} unreadable — HTTP ${res.status}`); continue; }
+  if (!res.ok) { fail(`${label} ${interval}: product ${id} unreadable — HTTP ${res.status}`); continue; }
 
   const p: any = await res.json();
   const wantInterval = interval === "monthly" ? "month" : "year";
@@ -89,29 +108,37 @@ for (const [interval, id] of Object.entries(products) as ["monthly" | "yearly", 
   const priced = prices.find((pr) => pr.amount_type === "seat_based" || pr.amount_type === "fixed");
   const perSeat = priced?.price_per_seat ?? priced?.price_amount ?? null;
 
-  if (p.is_archived) fail(`${interval}: product "${p.name}" is ARCHIVED`);
-  if (!p.is_recurring) fail(`${interval}: "${p.name}" is one-time, not a subscription product`);
+  if (p.is_archived) fail(`${label} ${interval}: product "${p.name}" is ARCHIVED`);
+  if (!p.is_recurring) fail(`${label} ${interval}: "${p.name}" is one-time, not a subscription product`);
   else if (p.recurring_interval !== wantInterval) {
-    fail(`${interval}: "${p.name}" renews per ${p.recurring_interval}, expected ${wantInterval}`);
+    fail(`${label} ${interval}: "${p.name}" renews per ${p.recurring_interval}, expected ${wantInterval}`);
   }
 
   if (!priced || perSeat == null) {
-    fail(`${interval}: "${p.name}" has no seat_based or fixed price (found: ${priceKinds.join(", ") || "none"}). ` +
+    fail(`${label} ${interval}: "${p.name}" has no seat_based or fixed price (found: ${priceKinds.join(", ") || "none"}). ` +
       `A pay-what-you-want price cannot prorate seat or plan changes.`);
   } else {
-    const want = EXPECTED_CENTS[interval];
-    if (perSeat !== want) {
-      fail(`${interval}: "${p.name}" costs $${(perSeat / 100).toFixed(2)} ${priced.price_currency ?? ""} per seat, ` +
+    const want = expectedCents?.[interval] ?? null;
+    if (want != null && perSeat !== want) {
+      fail(`${label} ${interval}: "${p.name}" costs $${(perSeat / 100).toFixed(2)} ${priced.price_currency ?? ""} per seat, ` +
         `but the pricing page advertises $${(want / 100).toFixed(0)} — customers would be charged a different amount than shown`);
     } else {
-      pass(`${interval}: "${p.name}" — recurring/${p.recurring_interval}, ${priced.amount_type} $${(perSeat / 100).toFixed(2)}/seat`);
+      pass(`${label} ${interval}: "${p.name}" — recurring/${p.recurring_interval}, ${priced.amount_type} $${(perSeat / 100).toFixed(2)}/seat`);
+    }
+    // A seat product must price per seat. A `fixed` price is accepted by Polar
+    // for proration, but our seat UI multiplies by the seat count, so a flat
+    // product would show a total nobody is ever charged.
+    if (priced.amount_type !== "seat_based") {
+      fail(`${label} ${interval}: "${p.name}" is ${priced.amount_type}, not seat_based — the UI bills per seat, ` +
+        `so it would display seats × $${(perSeat / 100).toFixed(2)} while Polar charges a flat $${(perSeat / 100).toFixed(2)}`);
     }
     // Volume tiers beyond the first would make the advertised flat per-seat price wrong.
     const tiers = priced.seat_tiers?.tiers ?? [];
     if (tiers.length > 1) {
-      fail(`${interval}: "${p.name}" has ${tiers.length} volume tiers, but the pricing page shows one flat per-seat price`);
+      fail(`${label} ${interval}: "${p.name}" has ${tiers.length} volume tiers, but the pricing page shows one flat per-seat price`);
     }
   }
+}
 }
 
 // ── Organization readiness ────────────────────────────────────────────────────
