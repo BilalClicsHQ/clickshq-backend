@@ -200,7 +200,7 @@ const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'support@clicshq.com';
 
 // Palette
 const INK = '#111113';
-const BODY_TEXT = '#4b4b53';
+const BODY_TEXT = '#111113';
 const MUTED = '#7c7c86';
 const HAIRLINE = '#e6e6ea';
 const PAGE_BG = '#e8e8ea';
